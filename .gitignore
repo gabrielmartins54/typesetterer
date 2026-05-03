@@ -1,0 +1,17 @@
+﻿# Visual Studio
+.vs/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+
+# Node
+node_modules/
+
+# Secrets (DO NOT UPLOAD)
+*.json
+!package.json
+!package-lock.json
+
+# Squirrel Output
+Releases/
