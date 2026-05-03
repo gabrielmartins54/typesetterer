@@ -20,6 +20,7 @@ internal sealed class MainForm : Form
     private readonly Button _fileButton = new();
     private readonly Button _saveSlot1Button = new();
     private readonly Button _saveSlot2Button = new();
+    private readonly TextBox _tagsTextBox = new();
     private readonly ToolTip _toolTip = new();
     private readonly List<ScriptLine> _lines = [];
 
@@ -94,10 +95,11 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Padding = new Padding(7),
             BackColor = BackColor,
         };
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -130,6 +132,14 @@ internal sealed class MainForm : Form
         topButtons.Controls.Add(_saveSlot1Button, 2, 0);
         topButtons.Controls.Add(_saveSlot2Button, 3, 0);
 
+        _tagsTextBox.Dock = DockStyle.Top;
+        _tagsTextBox.BackColor = RowBlack;
+        _tagsTextBox.ForeColor = TextMuted;
+        _tagsTextBox.BorderStyle = BorderStyle.FixedSingle;
+        _tagsTextBox.Font = new Font("Segoe UI", 8F);
+        _tagsTextBox.Text = WindowSettings.GetIgnoredTags();
+        _toolTip.SetToolTip(_tagsTextBox, "Ignored tags (comma-separated). Text before first space is ignored if it matches a tag.");
+
         var strip = new Panel
         {
             Dock = DockStyle.Top,
@@ -160,9 +170,10 @@ internal sealed class MainForm : Form
         _statusLabel.BackColor = AppBlack;
 
         root.Controls.Add(topButtons, 0, 0);
-        root.Controls.Add(strip, 0, 1);
-        root.Controls.Add(_lineList, 0, 2);
-        root.Controls.Add(_statusLabel, 0, 3);
+        root.Controls.Add(_tagsTextBox, 0, 1);
+        root.Controls.Add(strip, 0, 2);
+        root.Controls.Add(_lineList, 0, 3);
+        root.Controls.Add(_statusLabel, 0, 4);
         Controls.Add(root);
     }
 
@@ -199,7 +210,9 @@ internal sealed class MainForm : Form
             }
         };
 
-        _hotkeys.PasteShortcutObserved += (_, _) => BeginInvoke(new Action(() => _ = AdvanceAfterPasteAsync()));
+        _tagsTextBox.TextChanged += (_, _) => WindowSettings.SaveIgnoredTags(_tagsTextBox.Text);
+
+        _hotkeys.PasteShortcutObserved += (_, _) => BeginInvoke(new Action(() => _ = HandlePasteSequenceAsync()));
     }
 
     private void LoadFromClipboard()
@@ -248,21 +261,34 @@ internal sealed class MainForm : Form
         UpdateState(status);
     }
 
-    private async Task AdvanceAfterPasteAsync()
+    private async Task HandlePasteSequenceAsync()
     {
         if (_currentIndex < 0 || _currentIndex >= _lines.Count)
         {
-            UpdateState("No current line to advance from.");
+            UpdateState("No current line to paste.");
             return;
         }
 
-        await Task.Delay(300);
+        // 1. Immediately copy current line again to ensure it's on clipboard
+        CopyCurrentLineToClipboard();
+
+        // 2. Trigger CTRL+V (if the user triggered this via hotkey, it might already be in flight, 
+        // but the user requested the hotkey to "trigger" it).
+        // SendWait helps ensure the OS processes it before we change the clipboard.
+        SendKeys.SendWait("^v");
+
+        // 3. Mark as pasted and update UI
+        _lines[_currentIndex].IsPasted = true;
+        
+        await Task.Delay(200);
 
         if (!PhotoshopFocusService.IsPhotoshopForeground())
         {
+            UpdateState($"Line {ReadableLineNumber(_currentIndex)} pasted.");
             return;
         }
 
+        // 4. Advance and copy NEXT line
         _currentIndex = FindNextPasteable(_currentIndex);
         CopyCurrentLineToClipboard();
         UpdateState(_currentIndex < 0 ? "End of script." : $"Line {ReadableLineNumber(_currentIndex)} copied.");
@@ -279,7 +305,7 @@ internal sealed class MainForm : Form
     private void CopyCurrentLineToClipboard()
     {
         if (_currentIndex < 0 || _currentIndex >= _lines.Count) return;
-        PasteService.CopyText(_lines[_currentIndex].Text);
+        PasteService.CopyText(_lines[_currentIndex].CleanText);
     }
 
     private void HandleSaveSlotMouseUp(int slot, MouseEventArgs e)
@@ -309,7 +335,7 @@ internal sealed class MainForm : Form
             CurrentIndex = _currentIndex,
             Name = _currentScriptName,
             SavedAt = DateTime.UtcNow,
-            Lines = _lines.Select(line => line.Text).ToList(),
+            Lines = _lines.Select(line => new SavedLine { RawText = line.RawText, IsPasted = line.IsPasted }).ToList(),
         };
 
         WindowSettings.SaveSlot(slot, saveSlot);
@@ -332,7 +358,17 @@ internal sealed class MainForm : Form
         }
 
         _lines.Clear();
-        _lines.AddRange(saveSlot.Lines.Select((line, index) => new ScriptLine(index + 1, line, !string.IsNullOrWhiteSpace(line))));
+        foreach (var saved in saveSlot.Lines)
+        {
+            _lines.Add(new ScriptLine
+            {
+                SourceNumber = 0, // Not strictly needed for restore
+                RawText = saved.RawText,
+                CleanText = ScriptParser.CleanSingleLine(saved.RawText),
+                IsPasted = saved.IsPasted,
+                Pasteable = true
+            });
+        }
         _currentScriptName = string.IsNullOrWhiteSpace(saveSlot.Name) ? $"Slot {slot}" : saveSlot.Name;
         _currentIndex = saveSlot.CurrentIndex;
         RefreshLineList();
@@ -414,7 +450,8 @@ internal sealed class MainForm : Form
         e.Graphics.SmoothingMode = SmoothingMode.None;
 
         var textRect = new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 14, e.Bounds.Height);
-        TextRenderer.DrawText(e.Graphics, line.Text, Font, textRect, foreColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        var displayColor = line.IsPasted && !isCurrent ? TextMuted : foreColor;
+        TextRenderer.DrawText(e.Graphics, line.RawText, Font, textRect, displayColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
         using var divider = new Pen(isCurrent ? Color.FromArgb(92, 146, 245) : BorderBlack);
         e.Graphics.DrawLine(divider, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);

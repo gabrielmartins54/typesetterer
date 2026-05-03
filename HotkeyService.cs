@@ -14,6 +14,7 @@ internal sealed partial class HotkeyService : IDisposable
     private const int VK_LCONTROL = 0xA2;
     private const int VK_RCONTROL = 0xA3;
     private const int VK_V = 0x56;
+    private const int LLKHF_INJECTED = 0x00000010;
 
     private readonly LowLevelKeyboardProc _keyboardProc;
     private IntPtr _hookHandle;
@@ -49,11 +50,18 @@ internal sealed partial class HotkeyService : IDisposable
 
             if (info.vkCode == VK_V && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN))
             {
+                // Ignore injected keys to avoid infinite loops from SendKeys
+                if ((info.flags & LLKHF_INJECTED) != 0)
+                {
+                    return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+                }
+
                 var ctrlDown = IsKeyDown(VK_CONTROL) || IsKeyDown(VK_LCONTROL) || IsKeyDown(VK_RCONTROL);
                 if (ctrlDown && !_ctrlVDown && PhotoshopFocusService.IsPhotoshopForeground())
                 {
                     _ctrlVDown = true;
                     PasteShortcutObserved?.Invoke(this, EventArgs.Empty);
+                    return (IntPtr)1; // Suppress original event
                 }
             }
         }

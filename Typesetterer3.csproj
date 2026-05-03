@@ -16,5 +16,6 @@
     <PackageReference Include="FirebaseAuthentication.net" Version="4.1.0" />
     <PackageReference Include="FirebaseDatabase.net" Version="5.0.0" />
     <PackageReference Include="System.Management" Version="10.0.7" />
+    <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 </Project>

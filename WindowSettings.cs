@@ -15,6 +15,7 @@ internal sealed class WindowSettings
     public int Height { get; set; }
     public ScriptSaveSlot? SaveSlot1 { get; set; }
     public ScriptSaveSlot? SaveSlot2 { get; set; }
+    public string IgnoredTags { get; set; } = string.Empty;
 
     public Rectangle Bounds => new(Left, Top, Width, Height);
 
@@ -66,6 +67,15 @@ internal sealed class WindowSettings
         Save(settings);
     }
 
+    public static string GetIgnoredTags() => Load()?.IgnoredTags ?? string.Empty;
+
+    public static void SaveIgnoredTags(string tags)
+    {
+        var settings = Load() ?? new WindowSettings();
+        settings.IgnoredTags = tags;
+        Save(settings);
+    }
+
     private static void Save(WindowSettings settings)
     {
         try
@@ -90,5 +100,11 @@ internal sealed class ScriptSaveSlot
     public int CurrentIndex { get; set; }
     public string? Name { get; set; }
     public DateTime SavedAt { get; set; }
-    public List<string> Lines { get; set; } = [];
+    public List<SavedLine> Lines { get; set; } = [];
+}
+
+internal sealed class SavedLine
+{
+    public string RawText { get; set; } = string.Empty;
+    public bool IsPasted { get; set; }
 }

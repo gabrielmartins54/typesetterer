@@ -16,6 +16,12 @@ internal static partial class ScriptParser
         return ParseFormattedLines(normalized.Split('\n'));
     }
 
+    public static string CleanSingleLine(string rawText)
+    {
+        var tags = GetIgnoredTags();
+        return CleanLeading(rawText, tags);
+    }
+
     public static List<ScriptLine> ParseFile(string path)
     {
         var extension = Path.GetExtension(path).ToLowerInvariant();
@@ -27,6 +33,15 @@ internal static partial class ScriptParser
         };
 
         return ParseText(text);
+    }
+
+    private static string[] GetIgnoredTags()
+    {
+        return WindowSettings.GetIgnoredTags()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToArray();
     }
 
     private static string ReadDocx(string path)
@@ -63,31 +78,78 @@ internal static partial class ScriptParser
     {
         var result = new List<ScriptLine>();
         var sourceNumber = 0;
+        var tags = GetIgnoredTags();
 
         foreach (var rawLine in rawLines)
         {
             sourceNumber++;
-            var cleaned = CleanLeading(rawLine);
+            var trimmedRaw = rawLine.Trim();
+            if (string.IsNullOrWhiteSpace(trimmedRaw)) continue;
+
+            // Find if there's a tag
+            string? foundTag = null;
+            var lineForTagCheck = trimmedRaw;
+            foreach (var tag in tags)
+            {
+                if (lineForTagCheck.StartsWith(tag, StringComparison.OrdinalIgnoreCase))
+                {
+                    foundTag = tag;
+                    break;
+                }
+            }
+
+            var cleaned = CleanLeading(trimmedRaw, tags);
             var parts = cleaned
                 .Split("//", StringSplitOptions.None)
                 .Select(part => part.Trim())
-                .Where(part => part.Length > 0);
+                .Where(part => part.Length > 0)
+                .ToList();
 
-            foreach (var part in parts)
+            for (var i = 0; i < parts.Count; i++)
             {
-                result.Add(new ScriptLine(sourceNumber, part, !string.IsNullOrWhiteSpace(part)));
+                var part = parts[i];
+                var display = part;
+                
+                // Prepend tag to the first part for visual feedback
+                if (i == 0 && foundTag != null)
+                {
+                    display = foundTag + " " + part;
+                }
+                else if (i > 0)
+                {
+                    display = "// " + part;
+                }
+
+                result.Add(new ScriptLine
+                {
+                    SourceNumber = sourceNumber,
+                    RawText = display,
+                    CleanText = part,
+                    Pasteable = true
+                });
             }
         }
 
         return result;
     }
 
-    private static string CleanLeading(string line)
+    private static string CleanLeading(string line, string[] tags)
     {
-        if (IsPunctuationOnly(line)) return line;
+        var trimmed = line.TrimStart();
+        if (IsPunctuationOnly(trimmed)) return trimmed;
 
-        var firstSpace = line.IndexOf(' ', StringComparison.Ordinal);
-        return firstSpace >= 0 ? line[(firstSpace + 1)..] : line;
+        foreach (var tag in tags)
+        {
+            if (trimmed.StartsWith(tag, StringComparison.OrdinalIgnoreCase))
+            {
+                var remainder = trimmed[tag.Length..].TrimStart();
+                // If it was followed by a space, we strip that space too (implicit in TrimStart above)
+                return remainder;
+            }
+        }
+
+        var firstSpace = trimmed.IndexOf(' ', StringComparison.Ordinal);
+        return firstSpace >= 0 ? trimmed[(firstSpace + 1)..] : trimmed;
     }
 
     private static bool IsPunctuationOnly(string line)
@@ -116,7 +178,23 @@ internal static partial class ScriptParser
     private static partial Regex DocxWhitespaceRegex();
 }
 
-internal sealed record ScriptLine(int SourceNumber, string Text, bool Pasteable)
+internal sealed class ScriptLine
 {
-    public override string ToString() => Text;
+    public int SourceNumber { get; init; }
+    public string RawText { get; init; } = string.Empty;
+    public string CleanText { get; init; } = string.Empty;
+    public bool Pasteable { get; init; }
+    public bool IsPasted { get; set; }
+
+    public ScriptLine() { }
+
+    public ScriptLine(int sourceNumber, string text, bool pasteable)
+    {
+        SourceNumber = sourceNumber;
+        RawText = text;
+        CleanText = text;
+        Pasteable = pasteable;
+    }
+
+    public override string ToString() => RawText;
 }
