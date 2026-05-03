@@ -20,7 +20,8 @@ internal sealed class MainForm : Form
     private readonly Button _fileButton = new();
     private readonly Button _saveSlot1Button = new();
     private readonly Button _saveSlot2Button = new();
-    private readonly TextBox _tagsTextBox = new();
+    private readonly Button _tagsButton = new();
+    private readonly Button _keyButton = new();
     private readonly ToolTip _toolTip = new();
     private readonly List<ScriptLine> _lines = [];
 
@@ -95,11 +96,10 @@ internal sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 4,
             Padding = new Padding(7),
             BackColor = BackColor,
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -108,7 +108,7 @@ internal sealed class MainForm : Form
         var topButtons = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            ColumnCount = 4,
+            ColumnCount = 6,
             RowCount = 1,
             Margin = new Padding(0, 0, 0, 4),
             AutoSize = true,
@@ -118,27 +118,27 @@ internal sealed class MainForm : Form
         topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
         StyleTopButton(_clipboardButton, "CLIP");
         StyleTopButton(_fileButton, "FILE");
         StyleTopButton(_saveSlot1Button, "S1");
         StyleTopButton(_saveSlot2Button, "S2");
+        StyleTopButton(_tagsButton, "TAGS");
+        StyleTopButton(_keyButton, "KEY");
         _toolTip.SetToolTip(_clipboardButton, "Load formatted text from clipboard");
         _toolTip.SetToolTip(_fileButton, "Load and format a script file");
         _toolTip.SetToolTip(_saveSlot1Button, "Left-click restore project slot 1. Right-click save current script and line.");
         _toolTip.SetToolTip(_saveSlot2Button, "Left-click restore project slot 2. Right-click save current script and line.");
+        _toolTip.SetToolTip(_tagsButton, "Set ignored tags (comma-separated)");
+        _toolTip.SetToolTip(_keyButton, "Set custom hotkey");
         topButtons.Controls.Add(_clipboardButton, 0, 0);
         topButtons.Controls.Add(_fileButton, 1, 0);
         topButtons.Controls.Add(_saveSlot1Button, 2, 0);
         topButtons.Controls.Add(_saveSlot2Button, 3, 0);
-
-        _tagsTextBox.Dock = DockStyle.Top;
-        _tagsTextBox.BackColor = RowBlack;
-        _tagsTextBox.ForeColor = TextMuted;
-        _tagsTextBox.BorderStyle = BorderStyle.FixedSingle;
-        _tagsTextBox.Font = new Font("Segoe UI", 8F);
-        _tagsTextBox.Text = WindowSettings.GetIgnoredTags();
-        _toolTip.SetToolTip(_tagsTextBox, "Ignored tags (comma-separated). Text before first space is ignored if it matches a tag.");
+        topButtons.Controls.Add(_tagsButton, 4, 0);
+        topButtons.Controls.Add(_keyButton, 5, 0);
 
         var strip = new Panel
         {
@@ -170,10 +170,9 @@ internal sealed class MainForm : Form
         _statusLabel.BackColor = AppBlack;
 
         root.Controls.Add(topButtons, 0, 0);
-        root.Controls.Add(_tagsTextBox, 0, 1);
-        root.Controls.Add(strip, 0, 2);
-        root.Controls.Add(_lineList, 0, 3);
-        root.Controls.Add(_statusLabel, 0, 4);
+        root.Controls.Add(strip, 0, 1);
+        root.Controls.Add(_lineList, 0, 2);
+        root.Controls.Add(_statusLabel, 0, 3);
         Controls.Add(root);
     }
 
@@ -200,6 +199,8 @@ internal sealed class MainForm : Form
         _fileButton.Click += (_, _) => LoadFromFile();
         _saveSlot1Button.MouseUp += (_, e) => HandleSaveSlotMouseUp(1, e);
         _saveSlot2Button.MouseUp += (_, e) => HandleSaveSlotMouseUp(2, e);
+        _tagsButton.Click += (_, _) => PromptForTags();
+        _keyButton.Click += (_, _) => PromptForHotkey();
         _lineList.DrawItem += DrawLineItem;
         _lineList.MouseDown += (_, e) =>
         {
@@ -210,9 +211,50 @@ internal sealed class MainForm : Form
             }
         };
 
-        _tagsTextBox.TextChanged += (_, _) => WindowSettings.SaveIgnoredTags(_tagsTextBox.Text);
-
         _hotkeys.PasteShortcutObserved += (_, _) => BeginInvoke(new Action(() => _ = HandlePasteSequenceAsync()));
+    }
+
+    private void PromptForTags()
+    {
+        var currentTags = WindowSettings.GetIgnoredTags();
+        using var form = new Form { Width = 350, Height = 90, Text = "Ignored Tags (comma-separated)", StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedToolWindow, BackColor = AppBlack, ForeColor = TextWhite };
+        var textBox = new TextBox { Left = 10, Top = 15, Width = 230, Text = currentTags, BackColor = PanelBlack, ForeColor = TextWhite, BorderStyle = BorderStyle.FixedSingle };
+        var btnOk = new Button { Text = "Save", Left = 250, Top = 14, Width = 70, Height = 23, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = AccentBlue, ForeColor = Color.White };
+        btnOk.FlatAppearance.BorderSize = 0;
+        form.Controls.Add(textBox);
+        form.Controls.Add(btnOk);
+        form.AcceptButton = btnOk;
+        
+        if (form.ShowDialog(this) == DialogResult.OK)
+        {
+            WindowSettings.SaveIgnoredTags(textBox.Text);
+        }
+    }
+
+    private void PromptForHotkey()
+    {
+        var currentKey = (Keys)WindowSettings.GetCustomHotkey();
+        var requiresCtrl = WindowSettings.GetHotkeyRequiresCtrl();
+        var currentText = requiresCtrl ? $"CTRL + {currentKey}" : currentKey.ToString();
+        
+        using var form = new Form { Width = 300, Height = 120, Text = "Set Custom Hotkey", StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedToolWindow, BackColor = AppBlack, ForeColor = TextWhite, KeyPreview = true };
+        var label = new Label { Left = 10, Top = 20, Width = 260, Height = 40, Text = $"Current: {currentText}\nPress any key to change (ESC to cancel)...", TextAlign = ContentAlignment.MiddleCenter };
+        form.Controls.Add(label);
+        
+        form.KeyDown += (s, e) => 
+        {
+            if (e.KeyCode == Keys.Escape) 
+            {
+                form.DialogResult = DialogResult.Cancel;
+                return;
+            }
+            if (e.KeyCode == Keys.ControlKey || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Menu) return;
+            
+            WindowSettings.SaveCustomHotkey((int)e.KeyCode, e.Control);
+            form.DialogResult = DialogResult.OK;
+        };
+        
+        form.ShowDialog(this);
     }
 
     private void LoadFromClipboard()

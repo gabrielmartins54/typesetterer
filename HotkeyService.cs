@@ -18,7 +18,7 @@ internal sealed partial class HotkeyService : IDisposable
 
     private readonly LowLevelKeyboardProc _keyboardProc;
     private IntPtr _hookHandle;
-    private bool _ctrlVDown;
+    private bool _hotkeyDown;
 
     public event EventHandler? PasteShortcutObserved;
 
@@ -43,12 +43,15 @@ internal sealed partial class HotkeyService : IDisposable
         {
             var message = wParam.ToInt32();
             var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
-            if (info.vkCode == VK_V && (message == WM_KEYUP || message == WM_SYSKEYUP))
+            var hotkey = WindowSettings.GetCustomHotkey();
+            var requiresCtrl = WindowSettings.GetHotkeyRequiresCtrl();
+
+            if (info.vkCode == hotkey && (message == WM_KEYUP || message == WM_SYSKEYUP))
             {
-                _ctrlVDown = false;
+                _hotkeyDown = false;
             }
 
-            if (info.vkCode == VK_V && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN))
+            if (info.vkCode == hotkey && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN))
             {
                 // Ignore injected keys to avoid infinite loops from SendKeys
                 if ((info.flags & LLKHF_INJECTED) != 0)
@@ -57,9 +60,11 @@ internal sealed partial class HotkeyService : IDisposable
                 }
 
                 var ctrlDown = IsKeyDown(VK_CONTROL) || IsKeyDown(VK_LCONTROL) || IsKeyDown(VK_RCONTROL);
-                if (ctrlDown && !_ctrlVDown && PhotoshopFocusService.IsPhotoshopForeground())
+                var ctrlSatisfied = !requiresCtrl || ctrlDown;
+
+                if (ctrlSatisfied && !_hotkeyDown && PhotoshopFocusService.IsPhotoshopForeground())
                 {
-                    _ctrlVDown = true;
+                    _hotkeyDown = true;
                     PasteShortcutObserved?.Invoke(this, EventArgs.Empty);
                     return (IntPtr)1; // Suppress original event
                 }

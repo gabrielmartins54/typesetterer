@@ -16,6 +16,8 @@ internal sealed class WindowSettings
     public ScriptSaveSlot? SaveSlot1 { get; set; }
     public ScriptSaveSlot? SaveSlot2 { get; set; }
     public string IgnoredTags { get; set; } = string.Empty;
+    public int CustomHotkey { get; set; } = 0x56; // Default to 'V'
+    public bool HotkeyRequiresCtrl { get; set; } = true;
 
     public Rectangle Bounds => new(Left, Top, Width, Height);
 
@@ -73,6 +75,17 @@ internal sealed class WindowSettings
     {
         var settings = Load() ?? new WindowSettings();
         settings.IgnoredTags = tags;
+        Save(settings);
+    }
+
+    public static int GetCustomHotkey() => Load()?.CustomHotkey ?? 0x56;
+    public static bool GetHotkeyRequiresCtrl() => Load()?.HotkeyRequiresCtrl ?? true;
+
+    public static void SaveCustomHotkey(int vkCode, bool requiresCtrl)
+    {
+        var settings = Load() ?? new WindowSettings();
+        settings.CustomHotkey = vkCode;
+        settings.HotkeyRequiresCtrl = requiresCtrl;
         Save(settings);
     }
 
