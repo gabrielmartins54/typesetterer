@@ -54,11 +54,38 @@ internal static partial class ScriptParser
         var paragraphs = xml.Descendants(w + "p").ToList();
         var removedIndexes = new HashSet<int>();
 
-        for (var i = 1; i < paragraphs.Count; i++)
+        var isColored = new bool[paragraphs.Count];
+        for (var i = 0; i < paragraphs.Count; i++)
         {
-            if (HasColoredText(paragraphs[i], w))
+            isColored[i] = HasColoredText(paragraphs[i], w);
+        }
+
+        var idx = 0;
+        while (idx < paragraphs.Count)
+        {
+            if (isColored[idx])
             {
-                removedIndexes.Add(i - 1);
+                // Find the length of this colored run
+                var start = idx;
+                while (idx < paragraphs.Count && isColored[idx])
+                {
+                    idx++;
+                }
+                var length = idx - start;
+
+                // Delete up to 'length' preceding black paragraphs
+                var deleteStart = Math.Max(0, start - length);
+                for (var j = deleteStart; j < start; j++)
+                {
+                    if (!isColored[j])
+                    {
+                        removedIndexes.Add(j);
+                    }
+                }
+            }
+            else
+            {
+                idx++;
             }
         }
 
@@ -93,14 +120,17 @@ internal static partial class ScriptParser
             {
                 if (lineForTagCheck.StartsWith(tag, StringComparison.OrdinalIgnoreCase))
                 {
+                    if (lineForTagCheck.Length > tag.Length && char.IsLetter(lineForTagCheck[tag.Length]))
+                    {
+                        continue;
+                    }
                     foundTag = tag;
                     break;
                 }
             }
 
             var cleaned = CleanLeading(trimmedRaw, tags);
-            var parts = cleaned
-                .Split("//", StringSplitOptions.None)
+            var parts = Regex.Split(cleaned, @"(?<!:)//")
                 .Select(part => part.Trim())
                 .Where(part => part.Length > 0)
                 .ToList();
@@ -142,14 +172,17 @@ internal static partial class ScriptParser
         {
             if (trimmed.StartsWith(tag, StringComparison.OrdinalIgnoreCase))
             {
+                if (trimmed.Length > tag.Length && char.IsLetter(trimmed[tag.Length]))
+                {
+                    continue;
+                }
                 var remainder = trimmed[tag.Length..].TrimStart();
                 // If it was followed by a space, we strip that space too (implicit in TrimStart above)
                 return remainder;
             }
         }
 
-        var firstSpace = trimmed.IndexOf(' ', StringComparison.Ordinal);
-        return firstSpace >= 0 ? trimmed[(firstSpace + 1)..] : trimmed;
+        return trimmed;
     }
 
     private static bool IsPunctuationOnly(string line)
@@ -160,18 +193,75 @@ internal static partial class ScriptParser
 
     private static bool HasColoredText(XElement paragraph, XNamespace w)
     {
-        foreach (var color in paragraph.Descendants(w + "color"))
+        var totalLength = 0;
+        var coloredLength = 0;
+
+        foreach (var run in paragraph.Descendants(w + "r"))
         {
-            var value = ((string?)color.Attribute(w + "val"))?.ToUpperInvariant();
-            var theme = (string?)color.Attribute(w + "themeColor");
-            if (!string.IsNullOrEmpty(theme)) return true;
-            if (!string.IsNullOrEmpty(value) && value is not "AUTO" and not "000000")
+            var text = string.Concat(run.Descendants(w + "t").Select(t => t.Value));
+            if (string.IsNullOrEmpty(text)) continue;
+
+            totalLength += text.Length;
+
+            var isRunColored = false;
+            var rPr = run.Element(w + "rPr");
+            if (rPr != null)
             {
-                return true;
+                var color = rPr.Element(w + "color");
+                if (color != null)
+                {
+                    var value = ((string?)color.Attribute(w + "val"))?.ToUpperInvariant();
+                    var theme = ((string?)color.Attribute(w + "themeColor"))?.ToUpperInvariant();
+
+                    // Ignore default dark/text theme colors
+                    if (theme is not null and not "TEXT1" and not "TEXT2" and not "DARK1" and not "DARK2")
+                    {
+                        isRunColored = true;
+                    }
+                    else if (!string.IsNullOrEmpty(value) && value is not "AUTO" and not "000000")
+                    {
+                        // Ignore shades of gray or very dark hex colors
+                        if (value.Length != 6 || !IsDarkOrGray(value))
+                        {
+                            isRunColored = true;
+                        }
+                    }
+                }
+            }
+
+            if (isRunColored)
+            {
+                coloredLength += text.Length;
             }
         }
 
-        return false;
+        if (totalLength == 0) return false;
+
+        double ratio = (double)coloredLength / totalLength;
+        return ratio >= 0.5;
+    }
+
+    private static bool IsDarkOrGray(string hex)
+    {
+        if (hex.Length != 6) return false;
+        try
+        {
+            var r = Convert.ToInt32(hex[..2], 16);
+            var g = Convert.ToInt32(hex[2..4], 16);
+            var b = Convert.ToInt32(hex[4..6], 16);
+
+            // If all RGB components are very dark (e.g., < 80 out of 255)
+            if (r < 80 && g < 80 && b < 80) return true;
+
+            // If it's a shade of gray (R, G, and B are very close, e.g., within 15 of each other)
+            if (Math.Abs(r - g) < 15 && Math.Abs(g - b) < 15 && Math.Abs(r - b) < 15) return true;
+
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     [GeneratedRegex(@"\n{3,}")]

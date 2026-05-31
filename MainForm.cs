@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace Typesetterer3;
 
@@ -14,16 +15,24 @@ internal sealed class MainForm : Form
 
     private readonly HotkeyService _hotkeys = new();
     private readonly ListBox _lineList = new();
-    private readonly Label _progressLabel = new();
+    private readonly ToolStripLabel _progressLabel = new();
     private readonly Label _statusLabel = new();
-    private readonly Button _clipboardButton = new();
-    private readonly Button _fileButton = new();
-    private readonly Button _saveSlot1Button = new();
-    private readonly Button _saveSlot2Button = new();
-    private readonly Button _tagsButton = new();
-    private readonly Button _keyButton = new();
+    private readonly ToolStripMenuItem _clipMenuItem = new("Paste from clipboard");
+    private readonly ToolStripMenuItem _fileMenuItem = new("Open file");
+    private readonly ToolStripMenuItem _saveS1MenuItem = new("Save work in slot 1");
+    private readonly ToolStripMenuItem _saveS2MenuItem = new("Save work in slot 2");
+    private readonly ToolStripMenuItem _loadS1MenuItem = new("Load slot 1");
+    private readonly ToolStripMenuItem _loadS2MenuItem = new("Load slot 2");
+    private readonly ToolStripMenuItem _tagsMenuItem = new("Tags");
+    private readonly ToolStripMenuItem _keyMenuItem = new("Pasting hotkey");
+    private readonly ToolStripMenuItem _scriptKeyMenuItem = new("Script hotkey");
+    private readonly MenuStrip _menuStrip = new();
+    private readonly Panel _titleBar = new();
     private readonly ToolTip _toolTip = new();
     private readonly List<ScriptLine> _lines = [];
+
+    private readonly System.Windows.Forms.Timer _photoshopOwnerTimer = new();
+    private IntPtr _lastPhotoshopHandle = IntPtr.Zero;
 
     private int _currentIndex = -1;
     private string _currentScriptName = "Untitled";
@@ -33,17 +42,19 @@ internal sealed class MainForm : Form
         Text = "Typesetterer 3.0";
         StartPosition = FormStartPosition.CenterScreen;
         TopMost = true;
-        MinimumSize = new Size(300, 210);
+        MinimumSize = new Size(150, 100);
         Size = new Size(390, 285);
-        FormBorderStyle = FormBorderStyle.SizableToolWindow;
+        FormBorderStyle = FormBorderStyle.Sizable;
         Font = new Font("Segoe UI", 9F);
         BackColor = AppBlack;
+        Padding = new Padding(3); // Expose edges for resizing
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? Icon;
 
         RestoreWindowBounds();
         BuildUi();
         WireEvents();
         UpdateState();
+        StartPhotoshopOwnerTimer();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -56,14 +67,13 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            _photoshopOwnerTimer.Dispose();
             _hotkeys.Dispose();
             _lineList.Dispose();
             _progressLabel.Dispose();
             _statusLabel.Dispose();
-            _clipboardButton.Dispose();
-            _fileButton.Dispose();
-            _saveSlot1Button.Dispose();
-            _saveSlot2Button.Dispose();
+            _menuStrip.Dispose();
+            _titleBar.Dispose();
             _toolTip.Dispose();
         }
 
@@ -72,9 +82,42 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        _photoshopOwnerTimer.Stop();
+        if (Handle != IntPtr.Zero)
+        {
+            SetWindowOwner(Handle, IntPtr.Zero);
+        }
         var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
         WindowSettings.Save(bounds);
         base.OnFormClosing(e);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WM_NCCALCSIZE = 0x0083;
+        const int WM_NCHITTEST = 0x0084;
+        
+        if (m.Msg == WM_NCCALCSIZE && m.WParam.ToInt32() == 1)
+        {
+            m.Result = IntPtr.Zero;
+            return;
+        }
+
+        base.WndProc(ref m);
+
+        if (m.Msg == WM_NCHITTEST && (int)m.Result == 1) // HTCLIENT
+        {
+            var screenPoint = new Point(m.LParam.ToInt32() & 0xFFFF, m.LParam.ToInt32() >> 16);
+            var clientPoint = PointToClient(screenPoint);
+            const int border = 10;
+            
+            if (clientPoint.X >= ClientSize.Width - border && clientPoint.Y >= ClientSize.Height - border)
+                m.Result = (IntPtr)17; // HTBOTTOMRIGHT
+            else if (clientPoint.X >= ClientSize.Width - border)
+                m.Result = (IntPtr)11; // HTRIGHT
+            else if (clientPoint.Y >= ClientSize.Height - border)
+                m.Result = (IntPtr)15; // HTBOTTOM
+        }
     }
 
     private void RestoreWindowBounds()
@@ -92,115 +135,136 @@ internal sealed class MainForm : Form
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel
+        _titleBar.Dock = DockStyle.Top;
+        _titleBar.Height = 24;
+        _titleBar.BackColor = RowBlack;
+        
+        var closeButton = new Button
         {
-            Dock = DockStyle.Fill,
-            ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(7),
-            BackColor = BackColor,
+            Text = "X",
+            Dock = DockStyle.Right,
+            Width = 30,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = TextMuted,
+            BackColor = RowBlack,
+            Font = new Font("Segoe UI", 8F, FontStyle.Bold)
         };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        closeButton.FlatAppearance.BorderSize = 0;
+        closeButton.FlatAppearance.MouseOverBackColor = Color.DarkRed;
+        closeButton.FlatAppearance.MouseDownBackColor = Color.Red;
+        closeButton.Click += (_, _) => Close();
+        
+        _menuStrip.BackColor = RowBlack;
+        _menuStrip.ForeColor = TextWhite;
+        _menuStrip.Dock = DockStyle.Fill;
+        _menuStrip.AutoSize = false;
+        _menuStrip.Renderer = new ToolStripProfessionalRenderer(new DarkColorTable()) { RoundedEdges = false };
 
-        var topButtons = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            ColumnCount = 6,
-            RowCount = 1,
-            Margin = new Padding(0, 0, 0, 4),
-            AutoSize = true,
-            BackColor = AppBlack,
-        };
-        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        topButtons.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        var scriptMenu = new ToolStripMenuItem("Script");
+        scriptMenu.DropDown.BackColor = PanelBlack;
+        scriptMenu.DropDown.ForeColor = TextWhite;
+        scriptMenu.DropDownItems.Add(_clipMenuItem);
+        scriptMenu.DropDownItems.Add(_fileMenuItem);
 
-        StyleTopButton(_clipboardButton, "CLIP");
-        StyleTopButton(_fileButton, "FILE");
-        StyleTopButton(_saveSlot1Button, "S1");
-        StyleTopButton(_saveSlot2Button, "S2");
-        StyleTopButton(_tagsButton, "TAGS");
-        StyleTopButton(_keyButton, "KEY");
-        _toolTip.SetToolTip(_clipboardButton, "Load formatted text from clipboard");
-        _toolTip.SetToolTip(_fileButton, "Load and format a script file");
-        _toolTip.SetToolTip(_saveSlot1Button, "Left-click restore project slot 1. Right-click save current script and line.");
-        _toolTip.SetToolTip(_saveSlot2Button, "Left-click restore project slot 2. Right-click save current script and line.");
-        _toolTip.SetToolTip(_tagsButton, "Set ignored tags (comma-separated)");
-        _toolTip.SetToolTip(_keyButton, "Set custom hotkey");
-        topButtons.Controls.Add(_clipboardButton, 0, 0);
-        topButtons.Controls.Add(_fileButton, 1, 0);
-        topButtons.Controls.Add(_saveSlot1Button, 2, 0);
-        topButtons.Controls.Add(_saveSlot2Button, 3, 0);
-        topButtons.Controls.Add(_tagsButton, 4, 0);
-        topButtons.Controls.Add(_keyButton, 5, 0);
+        var stateMenu = new ToolStripMenuItem("State");
+        stateMenu.DropDown.BackColor = PanelBlack;
+        stateMenu.DropDown.ForeColor = TextWhite;
+        stateMenu.DropDownItems.Add(_saveS1MenuItem);
+        stateMenu.DropDownItems.Add(_saveS2MenuItem);
+        stateMenu.DropDownItems.Add(_loadS1MenuItem);
+        stateMenu.DropDownItems.Add(_loadS2MenuItem);
 
-        var strip = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 22,
-            Margin = new Padding(0, 0, 0, 4),
-            BackColor = AppBlack,
-        };
-        _progressLabel.TextAlign = ContentAlignment.MiddleCenter;
-        _progressLabel.Dock = DockStyle.Fill;
-        _progressLabel.Font = new Font(Font, FontStyle.Bold);
-        _progressLabel.ForeColor = TextWhite;
-        _progressLabel.BackColor = AppBlack;
-        strip.Controls.Add(_progressLabel);
+        var configMenu = new ToolStripMenuItem("Config");
+        configMenu.DropDown.BackColor = PanelBlack;
+        configMenu.DropDown.ForeColor = TextWhite;
+        configMenu.DropDownItems.Add(_tagsMenuItem);
+        configMenu.DropDownItems.Add(_keyMenuItem);
+        configMenu.DropDownItems.Add(_scriptKeyMenuItem);
+
+        _menuStrip.Items.Add(scriptMenu);
+        _menuStrip.Items.Add(stateMenu);
+        _menuStrip.Items.Add(configMenu);
+
+        _progressLabel.Alignment = ToolStripItemAlignment.Right;
+        _progressLabel.ForeColor = TextMuted;
+        _progressLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+        _menuStrip.Items.Add(_progressLabel);
+
+        scriptMenu.MouseEnter += (s, e) => scriptMenu.ShowDropDown();
+        stateMenu.MouseEnter += (s, e) => stateMenu.ShowDropDown();
+        configMenu.MouseEnter += (s, e) => configMenu.ShowDropDown();
+
+        _titleBar.Controls.Add(_menuStrip);
+        _titleBar.Controls.Add(closeButton);
 
         _lineList.Dock = DockStyle.Fill;
         _lineList.BorderStyle = BorderStyle.None;
         _lineList.DrawMode = DrawMode.OwnerDrawFixed;
         _lineList.ItemHeight = 24;
         _lineList.IntegralHeight = false;
-        _lineList.BackColor = PanelBlack;
+        _lineList.BackColor = AppBlack;
         _lineList.ForeColor = TextWhite;
         _lineList.HorizontalScrollbar = false;
 
-        _statusLabel.Dock = DockStyle.Bottom;
-        _statusLabel.Height = 19;
-        _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-        _statusLabel.ForeColor = TextMuted;
-        _statusLabel.BackColor = AppBlack;
-
-        root.Controls.Add(topButtons, 0, 0);
-        root.Controls.Add(strip, 0, 1);
-        root.Controls.Add(_lineList, 0, 2);
-        root.Controls.Add(_statusLabel, 0, 3);
-        Controls.Add(root);
+        Controls.Add(_lineList);
+        Controls.Add(_titleBar);
     }
 
-    private static void StyleTopButton(Button button, string text)
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+    [DllImport("user32.dll")]
+    private static extern int SendMessage(IntPtr hWnd, int Msg, int wParam, int lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+    private static extern IntPtr SetWindowLong32(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    private const int GWL_HWNDPARENT = -8;
+    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOACTIVATE = 0x0010;
+
+    private static IntPtr SetWindowOwner(IntPtr child, IntPtr owner)
     {
-        button.Text = text;
-        button.Dock = DockStyle.Left;
-        button.Width = 48;
-        button.Height = 22;
-        button.Margin = new Padding(0, 0, 5, 0);
-        button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderColor = BorderBlack;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(24, 30, 42);
-        button.FlatAppearance.MouseDownBackColor = AccentBlue;
-        button.BackColor = PanelBlack;
-        button.ForeColor = TextMuted;
-        button.Font = new Font("Segoe UI", 8F, FontStyle.Bold);
-        button.TextAlign = ContentAlignment.MiddleCenter;
+        if (IntPtr.Size == 8)
+            return SetWindowLongPtr64(child, GWL_HWNDPARENT, owner);
+        else
+            return SetWindowLong32(child, GWL_HWNDPARENT, owner);
+    }
+
+    private void WireTitleBarEvents()
+    {
+        void HandleDrag(object? s, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                ReleaseCapture();
+                SendMessage(Handle, 0xA1, 0x2, 0);
+            }
+        }
+
+        _titleBar.MouseDown += HandleDrag;
+        _menuStrip.MouseDown += HandleDrag;
     }
 
     private void WireEvents()
     {
-        _clipboardButton.Click += (_, _) => LoadFromClipboard();
-        _fileButton.Click += (_, _) => LoadFromFile();
-        _saveSlot1Button.MouseUp += (_, e) => HandleSaveSlotMouseUp(1, e);
-        _saveSlot2Button.MouseUp += (_, e) => HandleSaveSlotMouseUp(2, e);
-        _tagsButton.Click += (_, _) => PromptForTags();
-        _keyButton.Click += (_, _) => PromptForHotkey();
+        WireTitleBarEvents();
+        _clipMenuItem.Click += (_, _) => LoadFromClipboard();
+        _fileMenuItem.Click += (_, _) => LoadFromFile();
+        _saveS1MenuItem.Click += (_, _) => SaveCurrentSlot(1);
+        _saveS2MenuItem.Click += (_, _) => SaveCurrentSlot(2);
+        _loadS1MenuItem.Click += (_, _) => RestoreSaveSlot(1);
+        _loadS2MenuItem.Click += (_, _) => RestoreSaveSlot(2);
+        _tagsMenuItem.Click += (_, _) => PromptForTags();
+        _keyMenuItem.Click += (_, _) => PromptForHotkey();
+        _scriptKeyMenuItem.Click += (_, _) => PromptForScriptHotkey();
         _lineList.DrawItem += DrawLineItem;
         _lineList.MouseDown += (_, e) =>
         {
@@ -212,49 +276,271 @@ internal sealed class MainForm : Form
         };
 
         _hotkeys.PasteShortcutObserved += (_, _) => BeginInvoke(new Action(() => _ = HandlePasteSequenceAsync()));
+        _hotkeys.ScriptShortcutObserved += (_, _) => BeginInvoke(new Action(RunBuiltInScript));
     }
 
     private void PromptForTags()
     {
-        var currentTags = WindowSettings.GetIgnoredTags();
-        using var form = new Form { Width = 350, Height = 90, Text = "Ignored Tags (comma-separated)", StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedToolWindow, BackColor = AppBlack, ForeColor = TextWhite };
-        var textBox = new TextBox { Left = 10, Top = 15, Width = 230, Text = currentTags, BackColor = PanelBlack, ForeColor = TextWhite, BorderStyle = BorderStyle.FixedSingle };
-        var btnOk = new Button { Text = "Save", Left = 250, Top = 14, Width = 70, Height = 23, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = AccentBlue, ForeColor = Color.White };
-        btnOk.FlatAppearance.BorderSize = 0;
-        form.Controls.Add(textBox);
-        form.Controls.Add(btnOk);
-        form.AcceptButton = btnOk;
-        
-        if (form.ShowDialog(this) == DialogResult.OK)
+        using var form = new Form
         {
-            WindowSettings.SaveIgnoredTags(textBox.Text);
+            Width = 380,
+            Height = 320,
+            Text = "Manage Ignored Tags",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedToolWindow,
+            BackColor = AppBlack,
+            ForeColor = TextWhite,
+            TopMost = true,
+            KeyPreview = true,
+        };
+
+        var descLabel = new Label
+        {
+            Text = "Lines starting with these tags will have them stripped automatically.",
+            Location = new Point(12, 10),
+            Width = 340,
+            Height = 35,
+            ForeColor = TextMuted,
+            Font = new Font("Segoe UI", 8.5F),
+        };
+
+        var flowPanel = new FlowLayoutPanel
+        {
+            Location = new Point(12, 50),
+            Width = 340,
+            Height = 170,
+            BackColor = PanelBlack,
+            AutoScroll = true,
+            Padding = new Padding(6),
+        };
+
+        var addTextBox = new TextBox
+        {
+            Location = new Point(12, 232),
+            Width = 250,
+            Height = 25,
+            BackColor = PanelBlack,
+            ForeColor = TextWhite,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 10F),
+        };
+
+        var btnAdd = new Button
+        {
+            Text = "Add",
+            Location = new Point(272, 231),
+            Width = 80,
+            Height = 26,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = AccentBlue,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+            Cursor = Cursors.Hand,
+        };
+        btnAdd.FlatAppearance.BorderSize = 0;
+
+        form.Controls.Add(descLabel);
+        form.Controls.Add(flowPanel);
+        form.Controls.Add(addTextBox);
+        form.Controls.Add(btnAdd);
+
+        List<string> tagList = WindowSettings.GetIgnoredTags()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToList();
+
+        void RefreshTags()
+        {
+            flowPanel.Controls.Clear();
+            foreach (var tag in tagList)
+            {
+                var currentTag = tag;
+                var pill = CreateTagPill(currentTag, () =>
+                {
+                    tagList.Remove(currentTag);
+                    WindowSettings.SaveIgnoredTags(string.Join(",", tagList));
+                    RefreshTags();
+                });
+                flowPanel.Controls.Add(pill);
+            }
         }
+
+        void AddCurrentTag()
+        {
+            var text = addTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(text)) return;
+            if (!tagList.Contains(text, StringComparer.OrdinalIgnoreCase))
+            {
+                tagList.Add(text);
+                WindowSettings.SaveIgnoredTags(string.Join(",", tagList));
+                RefreshTags();
+            }
+            addTextBox.Clear();
+            addTextBox.Focus();
+        }
+
+        btnAdd.Click += (s, e) => AddCurrentTag();
+        addTextBox.KeyDown += (s, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                AddCurrentTag();
+            }
+        };
+
+        form.Load += (s, e) => RefreshTags();
+        form.ShowDialog(this);
+    }
+
+    private Panel CreateTagPill(string tag, Action onDelete)
+    {
+        var pill = new Panel
+        {
+            BackColor = RowBlack,
+            Height = 28,
+            Margin = new Padding(4),
+            Padding = new Padding(6, 2, 6, 2),
+        };
+
+        var label = new Label
+        {
+            Text = tag,
+            ForeColor = TextWhite,
+            AutoSize = true,
+            Location = new Point(6, 6),
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+        };
+
+        var deleteBtn = new Button
+        {
+            Text = "×",
+            ForeColor = Color.FromArgb(239, 83, 80), // Soft red
+            BackColor = Color.Transparent,
+            FlatStyle = FlatStyle.Flat,
+            Width = 18,
+            Height = 18,
+            Location = new Point(label.Right + 4, 5),
+            Font = new Font("Segoe UI", 8F, FontStyle.Bold),
+            Cursor = Cursors.Hand,
+        };
+        deleteBtn.FlatAppearance.BorderSize = 0;
+        deleteBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(40, 239, 83, 80);
+        deleteBtn.FlatAppearance.MouseDownBackColor = Color.FromArgb(80, 239, 83, 80);
+        deleteBtn.Click += (s, e) => onDelete();
+
+        pill.Controls.Add(label);
+        pill.Controls.Add(deleteBtn);
+        
+        pill.Width = label.PreferredWidth + 32;
+        deleteBtn.Left = label.Right + 2;
+
+        return pill;
+    }
+
+    private static string FormatHotkey(Keys key, bool ctrl, bool shift, bool alt)
+    {
+        if (key == Keys.None) return "None";
+        var parts = new List<string>();
+        if (ctrl) parts.Add("CTRL");
+        if (shift) parts.Add("SHIFT");
+        if (alt) parts.Add("ALT");
+        parts.Add(key.ToString().ToUpperInvariant());
+        return string.Join(" + ", parts);
     }
 
     private void PromptForHotkey()
     {
         var currentKey = (Keys)WindowSettings.GetCustomHotkey();
         var requiresCtrl = WindowSettings.GetHotkeyRequiresCtrl();
-        var currentText = requiresCtrl ? $"CTRL + {currentKey}" : currentKey.ToString();
+        var requiresShift = WindowSettings.GetHotkeyRequiresShift();
+        var requiresAlt = WindowSettings.GetHotkeyRequiresAlt();
+        var currentText = FormatHotkey(currentKey, requiresCtrl, requiresShift, requiresAlt);
         
-        using var form = new Form { Width = 300, Height = 120, Text = "Set Custom Hotkey", StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedToolWindow, BackColor = AppBlack, ForeColor = TextWhite, KeyPreview = true };
-        var label = new Label { Left = 10, Top = 20, Width = 260, Height = 40, Text = $"Current: {currentText}\nPress any key to change (ESC to cancel)...", TextAlign = ContentAlignment.MiddleCenter };
-        form.Controls.Add(label);
-        
-        form.KeyDown += (s, e) => 
+        using var form = new HotkeyCaptureForm("Set Custom Hotkey", currentText);
+        if (form.ShowDialog(this) == DialogResult.OK)
         {
-            if (e.KeyCode == Keys.Escape) 
-            {
-                form.DialogResult = DialogResult.Cancel;
-                return;
-            }
-            if (e.KeyCode == Keys.ControlKey || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Menu) return;
-            
-            WindowSettings.SaveCustomHotkey((int)e.KeyCode, e.Control);
-            form.DialogResult = DialogResult.OK;
-        };
+            WindowSettings.SaveCustomHotkey((int)form.SelectedKey, form.SelectedControl, form.SelectedShift, form.SelectedAlt);
+            UpdateState($"Hotkey changed to {FormatHotkey(form.SelectedKey, form.SelectedControl, form.SelectedShift, form.SelectedAlt)}");
+        }
+    }
+
+    private void PromptForScriptHotkey()
+    {
+        var currentKey = (Keys)WindowSettings.GetScriptHotkey();
+        var requiresCtrl = WindowSettings.GetScriptHotkeyRequiresCtrl();
+        var requiresShift = WindowSettings.GetScriptHotkeyRequiresShift();
+        var requiresAlt = WindowSettings.GetScriptHotkeyRequiresAlt();
+        var currentText = FormatHotkey(currentKey, requiresCtrl, requiresShift, requiresAlt);
         
-        form.ShowDialog(this);
+        using var form = new HotkeyCaptureForm("Set Script Hotkey", currentText);
+        if (form.ShowDialog(this) == DialogResult.OK)
+        {
+            WindowSettings.SaveScriptHotkey((int)form.SelectedKey, form.SelectedControl, form.SelectedShift, form.SelectedAlt);
+            UpdateState($"Script hotkey changed to {FormatHotkey(form.SelectedKey, form.SelectedControl, form.SelectedShift, form.SelectedAlt)}");
+        }
+    }
+
+    private sealed class HotkeyCaptureForm : Form
+    {
+        private readonly Label _label;
+
+        public Keys SelectedKey { get; private set; } = Keys.None;
+        public bool SelectedControl { get; private set; }
+        public bool SelectedShift { get; private set; }
+        public bool SelectedAlt { get; private set; }
+
+        public HotkeyCaptureForm(string title, string currentText)
+        {
+            Width = 320;
+            Height = 130;
+            Text = title;
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedToolWindow;
+            BackColor = AppBlack;
+            ForeColor = TextWhite;
+            KeyPreview = true;
+            TopMost = true;
+
+            _label = new Label
+            {
+                Left = 10,
+                Top = 20,
+                Width = 280,
+                Height = 60,
+                Text = $"Current: {currentText}\nPress any key combination to change\n(ESC to cancel)...",
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 9F)
+            };
+            Controls.Add(_label);
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            var keyCode = keyData & Keys.KeyCode;
+
+            if (keyCode == Keys.Escape)
+            {
+                DialogResult = DialogResult.Cancel;
+                return true;
+            }
+
+            // Exclude pure modifier keys
+            if (keyCode == Keys.ControlKey || keyCode == Keys.ShiftKey || keyCode == Keys.Menu ||
+                keyCode == Keys.LWin || keyCode == Keys.RWin)
+            {
+                return base.ProcessCmdKey(ref msg, keyData);
+            }
+
+            SelectedKey = keyCode;
+            SelectedControl = (keyData & Keys.Control) == Keys.Control;
+            SelectedShift = (keyData & Keys.Shift) == Keys.Shift;
+            SelectedAlt = (keyData & Keys.Alt) == Keys.Alt;
+
+            DialogResult = DialogResult.OK;
+            return true;
+        }
     }
 
     private void LoadFromClipboard()
@@ -299,7 +585,6 @@ internal sealed class MainForm : Form
         _currentScriptName = scriptName;
         _currentIndex = FindNextPasteable(-1);
         RefreshLineList();
-        CopyCurrentLineToClipboard();
         UpdateState(status);
     }
 
@@ -311,57 +596,47 @@ internal sealed class MainForm : Form
             return;
         }
 
-        // 1. Immediately copy current line again to ensure it's on clipboard
-        CopyCurrentLineToClipboard();
-
-        // 2. Trigger CTRL+V (if the user triggered this via hotkey, it might already be in flight, 
-        // but the user requested the hotkey to "trigger" it).
-        // SendWait helps ensure the OS processes it before we change the clipboard.
-        SendKeys.SendWait("^v");
-
-        // 3. Mark as pasted and update UI
-        _lines[_currentIndex].IsPasted = true;
-        
-        await Task.Delay(200);
-
-        if (!PhotoshopFocusService.IsPhotoshopForeground())
+        var pastedIndex = _currentIndex;
+        if (!CopyCurrentLineToClipboard())
         {
-            UpdateState($"Line {ReadableLineNumber(_currentIndex)} pasted.");
+            UpdateState("Clipboard is busy. Try hotkey again.");
             return;
         }
 
-        // 4. Advance and copy NEXT line
+        // Give clipboard updates a short moment to settle before sending paste.
+        await Task.Delay(40);
+
+        // Trigger CTRL+V from the configured hotkey.
+        SendKeys.SendWait("^v");
+
+        _lines[pastedIndex].IsPasted = true;
+        
+        await Task.Delay(120);
+
+        if (!PhotoshopFocusService.IsPhotoshopForeground())
+        {
+            UpdateState($"Line {ReadableLineNumber(pastedIndex)} pasted.");
+            return;
+        }
+
+        // Advance selection only. Do not pre-copy next line.
         _currentIndex = FindNextPasteable(_currentIndex);
-        CopyCurrentLineToClipboard();
-        UpdateState(_currentIndex < 0 ? "End of script." : $"Line {ReadableLineNumber(_currentIndex)} copied.");
+        UpdateState(_currentIndex < 0
+            ? "End of script."
+            : $"Line {ReadableLineNumber(pastedIndex)} pasted. Next line selected.");
     }
 
     private void SelectLine(int index, string status)
     {
         _currentIndex = index;
         _lineList.SelectedIndex = index;
-        CopyCurrentLineToClipboard();
         UpdateState(status);
     }
 
-    private void CopyCurrentLineToClipboard()
+    private bool CopyCurrentLineToClipboard()
     {
-        if (_currentIndex < 0 || _currentIndex >= _lines.Count) return;
-        PasteService.CopyText(_lines[_currentIndex].CleanText);
-    }
-
-    private void HandleSaveSlotMouseUp(int slot, MouseEventArgs e)
-    {
-        if (e.Button == MouseButtons.Right)
-        {
-            SaveCurrentSlot(slot);
-            return;
-        }
-
-        if (e.Button == MouseButtons.Left)
-        {
-            RestoreSaveSlot(slot);
-        }
+        if (_currentIndex < 0 || _currentIndex >= _lines.Count) return false;
+        return PasteService.CopyText(_lines[_currentIndex].CleanText);
     }
 
     private void SaveCurrentSlot(int slot)
@@ -414,7 +689,6 @@ internal sealed class MainForm : Form
         _currentScriptName = string.IsNullOrWhiteSpace(saveSlot.Name) ? $"Slot {slot}" : saveSlot.Name;
         _currentIndex = saveSlot.CurrentIndex;
         RefreshLineList();
-        CopyCurrentLineToClipboard();
         UpdateState($"Restored {_currentScriptName} from slot {slot}.");
     }
 
@@ -460,21 +734,32 @@ internal sealed class MainForm : Form
     private void UpdateState(string? status = null)
     {
         var total = PasteableCount();
-        if (total == 0)
+        string progressText = "";
+        if (total > 0)
         {
-            _progressLabel.Text = "No script loaded";
+            if (_currentIndex < 0)
+            {
+                progressText = $"Done - {total} lines";
+            }
+            else
+            {
+                progressText = $"Line {ReadableLineNumber(_currentIndex)} of {total}";
+                _lineList.SelectedIndex = _currentIndex;
+            }
         }
-        else if (_currentIndex < 0)
+
+        var displayStatus = status ?? (_currentIndex < 0 && total > 0 ? "End of script." : "");
+
+        if (!string.IsNullOrEmpty(displayStatus))
         {
-            _progressLabel.Text = $"Done - {total} lines";
+            _progressLabel.Text = string.IsNullOrEmpty(progressText) ? displayStatus : $"{progressText} | {displayStatus}";
         }
         else
         {
-            _progressLabel.Text = $"Line {ReadableLineNumber(_currentIndex)} of {total}";
-            _lineList.SelectedIndex = _currentIndex;
+            _progressLabel.Text = progressText;
         }
 
-        _statusLabel.Text = status ?? (_currentIndex < 0 && total > 0 ? "End of script." : "Press Ctrl+V in Photoshop.");
+        _statusLabel.Text = displayStatus;
         _lineList.Invalidate();
     }
 
@@ -484,7 +769,7 @@ internal sealed class MainForm : Form
 
         var line = _lines[e.Index];
         var isCurrent = e.Index == _currentIndex;
-        var backColor = isCurrent ? AccentBlue : (e.Index % 2 == 0 ? PanelBlack : RowBlack);
+        var backColor = isCurrent ? AccentBlue : AppBlack;
         var foreColor = isCurrent ? Color.White : TextWhite;
 
         using var background = new SolidBrush(backColor);
@@ -497,5 +782,66 @@ internal sealed class MainForm : Form
 
         using var divider = new Pen(isCurrent ? Color.FromArgb(92, 146, 245) : BorderBlack);
         e.Graphics.DrawLine(divider, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+    }
+
+    private void StartPhotoshopOwnerTimer()
+    {
+        _photoshopOwnerTimer.Interval = 1000;
+        _photoshopOwnerTimer.Tick += (s, e) => UpdatePhotoshopOwnership();
+        _photoshopOwnerTimer.Start();
+    }
+
+    private void UpdatePhotoshopOwnership()
+    {
+        IntPtr photoshopHandle = IntPtr.Zero;
+        try
+        {
+            var processes = System.Diagnostics.Process.GetProcessesByName("Photoshop");
+            foreach (var p in processes)
+            {
+                var handle = p.MainWindowHandle;
+                if (handle != IntPtr.Zero)
+                {
+                    photoshopHandle = handle;
+                    p.Dispose();
+                    break;
+                }
+                p.Dispose();
+            }
+        }
+        catch
+        {
+            // Ignore potential issues enumerating processes
+        }
+
+        if (photoshopHandle != _lastPhotoshopHandle)
+        {
+            _lastPhotoshopHandle = photoshopHandle;
+            if (IsHandleCreated)
+            {
+                SetWindowOwner(Handle, photoshopHandle);
+                SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+    }
+
+    private void RunBuiltInScript()
+    {
+        BuiltInScript.Execute();
+    }
+
+    private sealed class DarkColorTable : ProfessionalColorTable
+    {
+        public override Color MenuItemSelected => AccentBlue;
+        public override Color MenuItemBorder => Color.Transparent;
+        public override Color MenuItemSelectedGradientBegin => AccentBlue;
+        public override Color MenuItemSelectedGradientEnd => AccentBlue;
+        public override Color MenuItemPressedGradientBegin => PanelBlack;
+        public override Color MenuItemPressedGradientEnd => PanelBlack;
+        public override Color ToolStripDropDownBackground => PanelBlack;
+        public override Color ImageMarginGradientBegin => PanelBlack;
+        public override Color ImageMarginGradientMiddle => PanelBlack;
+        public override Color ImageMarginGradientEnd => PanelBlack;
+        public override Color MenuBorder => BorderBlack;
     }
 }

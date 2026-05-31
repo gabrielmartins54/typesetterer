@@ -59,11 +59,22 @@ internal static class Program
             var newVersion = await mgr.CheckForUpdatesAsync();
             if (newVersion == null) return;
 
-            // Download updates
-            await mgr.DownloadUpdatesAsync(newVersion);
+            var updateInfo = newVersion!;
 
-            // The update will be applied the next time the app starts
-            // Or you can call mgr.ApplyUpdatesAndRestart(newVersion) here to force it
+            // Show the update dialog on the UI thread
+            if (Application.OpenForms.Count > 0 && Application.OpenForms[0] is Form mainForm)
+            {
+                mainForm.Invoke(new Action(() =>
+                {
+                    using var dialog = new UpdateDialog(mgr, updateInfo);
+                    dialog.ShowDialog(mainForm);
+                }));
+            }
+            else
+            {
+                using var dialog = new UpdateDialog(mgr, updateInfo);
+                dialog.ShowDialog();
+            }
         }
         catch 
         { 

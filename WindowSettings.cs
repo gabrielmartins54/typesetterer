@@ -18,6 +18,12 @@ internal sealed class WindowSettings
     public string IgnoredTags { get; set; } = string.Empty;
     public int CustomHotkey { get; set; } = 0x56; // Default to 'V'
     public bool HotkeyRequiresCtrl { get; set; } = true;
+    public bool HotkeyRequiresShift { get; set; } = false;
+    public bool HotkeyRequiresAlt { get; set; } = false;
+    public int ScriptHotkey { get; set; } = 0x71; // Default to F2 (0x71)
+    public bool ScriptHotkeyRequiresCtrl { get; set; } = false;
+    public bool ScriptHotkeyRequiresShift { get; set; } = false;
+    public bool ScriptHotkeyRequiresAlt { get; set; } = false;
 
     public Rectangle Bounds => new(Left, Top, Width, Height);
 
@@ -80,12 +86,31 @@ internal sealed class WindowSettings
 
     public static int GetCustomHotkey() => Load()?.CustomHotkey ?? 0x56;
     public static bool GetHotkeyRequiresCtrl() => Load()?.HotkeyRequiresCtrl ?? true;
+    public static bool GetHotkeyRequiresShift() => Load()?.HotkeyRequiresShift ?? false;
+    public static bool GetHotkeyRequiresAlt() => Load()?.HotkeyRequiresAlt ?? false;
 
-    public static void SaveCustomHotkey(int vkCode, bool requiresCtrl)
+    public static void SaveCustomHotkey(int vkCode, bool requiresCtrl, bool requiresShift, bool requiresAlt)
     {
         var settings = Load() ?? new WindowSettings();
         settings.CustomHotkey = vkCode;
         settings.HotkeyRequiresCtrl = requiresCtrl;
+        settings.HotkeyRequiresShift = requiresShift;
+        settings.HotkeyRequiresAlt = requiresAlt;
+        Save(settings);
+    }
+
+    public static int GetScriptHotkey() => Load()?.ScriptHotkey ?? 0x71;
+    public static bool GetScriptHotkeyRequiresCtrl() => Load()?.ScriptHotkeyRequiresCtrl ?? false;
+    public static bool GetScriptHotkeyRequiresShift() => Load()?.ScriptHotkeyRequiresShift ?? false;
+    public static bool GetScriptHotkeyRequiresAlt() => Load()?.ScriptHotkeyRequiresAlt ?? false;
+
+    public static void SaveScriptHotkey(int vkCode, bool requiresCtrl, bool requiresShift, bool requiresAlt)
+    {
+        var settings = Load() ?? new WindowSettings();
+        settings.ScriptHotkey = vkCode;
+        settings.ScriptHotkeyRequiresCtrl = requiresCtrl;
+        settings.ScriptHotkeyRequiresShift = requiresShift;
+        settings.ScriptHotkeyRequiresAlt = requiresAlt;
         Save(settings);
     }
 
