@@ -33,6 +33,7 @@ internal sealed class MainForm : Form
 
     private readonly System.Windows.Forms.Timer _photoshopOwnerTimer = new();
     private IntPtr _lastPhotoshopHandle = IntPtr.Zero;
+    private bool _hiddenByPhotoshopState;
 
     private int _currentIndex = -1;
     private string _currentScriptName = "Untitled";
@@ -786,13 +787,18 @@ internal sealed class MainForm : Form
 
     private void StartPhotoshopOwnerTimer()
     {
-        _photoshopOwnerTimer.Interval = 1000;
-        _photoshopOwnerTimer.Tick += (s, e) => UpdatePhotoshopOwnership();
+        _photoshopOwnerTimer.Interval = 150;
+        _photoshopOwnerTimer.Tick += OnPhotoshopTimerTick;
         _photoshopOwnerTimer.Start();
     }
 
-    private void UpdatePhotoshopOwnership()
+    private IntPtr GetPhotoshopHandle()
     {
+        if (_lastPhotoshopHandle != IntPtr.Zero && PhotoshopFocusService.IsWindow(_lastPhotoshopHandle))
+        {
+            return _lastPhotoshopHandle;
+        }
+
         IntPtr photoshopHandle = IntPtr.Zero;
         try
         {
@@ -821,6 +827,41 @@ internal sealed class MainForm : Form
             {
                 SetWindowOwner(Handle, photoshopHandle);
                 SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+        }
+
+        return photoshopHandle;
+    }
+
+    private void OnPhotoshopTimerTick(object? sender, EventArgs e)
+    {
+        IntPtr photoshopHandle = GetPhotoshopHandle();
+
+        if (WindowState == FormWindowState.Minimized) return;
+
+        bool shouldHide = false;
+        if (photoshopHandle != IntPtr.Zero)
+        {
+            shouldHide = PhotoshopFocusService.IsPhotoshopInMenuOrModal(photoshopHandle);
+        }
+
+        const int SW_HIDE = 0;
+        const int SW_SHOWNA = 8;
+
+        if (shouldHide)
+        {
+            if (!_hiddenByPhotoshopState)
+            {
+                _hiddenByPhotoshopState = true;
+                PhotoshopFocusService.ShowWindow(Handle, SW_HIDE);
+            }
+        }
+        else
+        {
+            if (_hiddenByPhotoshopState)
+            {
+                _hiddenByPhotoshopState = false;
+                PhotoshopFocusService.ShowWindow(Handle, SW_SHOWNA);
             }
         }
     }
