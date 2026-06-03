@@ -34,9 +34,22 @@ jQWD9Afo1RjE5mQtTE56y9fxW0tIsBKD5D8NpP6UN249qmSWQ2rv6ab8H3vKPlrr
 r7XDd/MEvH5J/NT3MYPp
 -----END PRIVATE KEY-----`;
 
-const PRIVATE_KEY = process.env.RSA_PRIVATE_KEY 
-  ? process.env.RSA_PRIVATE_KEY.replace(/\\n/g, '\n')
-  : DEFAULT_PRIVATE_KEY;
+function formatPrivateKey(keyStr) {
+  if (!keyStr) return keyStr;
+  let cleaned = keyStr.trim();
+  if (cleaned.startsWith('"') && cleaned.endsWith('"')) cleaned = cleaned.slice(1, -1);
+  if (cleaned.startsWith("'") && cleaned.endsWith("'")) cleaned = cleaned.slice(1, -1);
+  cleaned = cleaned.replace(/\\n/g, '\n').replace(/\\r/g, '');
+
+  const base64Body = cleaned
+    .replace('-----BEGIN PRIVATE KEY-----', '')
+    .replace('-----END PRIVATE KEY-----', '')
+    .replace(/\s+/g, '');
+
+  return `-----BEGIN PRIVATE KEY-----\n${base64Body}\n-----END PRIVATE KEY-----`;
+}
+
+const PRIVATE_KEY = formatPrivateKey(process.env.RSA_PRIVATE_KEY || DEFAULT_PRIVATE_KEY);
 
 // Decrypted Photoshop execution scripts (kept secure on server)
 const SCRIPT_PAYLOAD = {
