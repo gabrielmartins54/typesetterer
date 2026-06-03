@@ -65,6 +65,7 @@ public class AuthService
 {
     // Configure your production backend API URL here.
     // For local testing, you can use: "http://localhost:3000/api/auth"
+    //private const string BackendUrl = "https://typesetterer.vercel.app/api/auth";
     private const string BackendUrl = "http://localhost:3000/api/auth";
 
     private const string PublicKeyPem = @"-----BEGIN PUBLIC KEY-----

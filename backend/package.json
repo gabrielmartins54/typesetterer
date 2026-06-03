@@ -4,6 +4,7 @@
   "description": "Secure Serverless Auth Backend for Typesetterer 3.0",
   "main": "api/auth.js",
   "scripts": {
+    "start": "node server.js",
     "generate-keys": "node generate-keys.js",
     "create-keys": "node create-keys.js"
   },

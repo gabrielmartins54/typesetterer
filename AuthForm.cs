@@ -20,18 +20,18 @@ public class AuthForm : Form
 
     private void InitializeComponent()
     {
-        this.Text = "Typesetterer 3.0 - Ativação";
+        this.Text = "Typesetterer 3.0 - Activation";
         this.Size = new Size(350, 180);
         this.FormBorderStyle = FormBorderStyle.FixedDialog;
         this.StartPosition = FormStartPosition.CenterScreen;
         this.MaximizeBox = false;
         this.MinimizeBox = false;
 
-        var label = new Label { Text = "Insira sua chave de acesso:", Location = new Point(20, 20), AutoSize = true };
+        var label = new Label { Text = "Enter your access key:", Location = new Point(20, 20), AutoSize = true };
         
         _keyBox = new TextBox { Location = new Point(20, 45), Width = 290 };
         
-        _loginBtn = new Button { Text = "Validar", Location = new Point(20, 75), Width = 290, Height = 30 };
+        _loginBtn = new Button { Text = "Validate", Location = new Point(20, 75), Width = 290, Height = 30 };
         _loginBtn.Click += async (s, e) => await ValidateKey();
 
         _statusLabel = new Label { Text = "", Location = new Point(20, 110), Width = 290, ForeColor = Color.Red };
@@ -51,7 +51,7 @@ public class AuthForm : Form
 
         _loginBtn.Enabled = false;
         _keyBox.Enabled = false;
-        _statusLabel.Text = "Validando...";
+        _statusLabel.Text = "Validating...";
         _statusLabel.ForeColor = Color.Black;
 
         // Usando a API Key fornecida do Firebase
@@ -66,19 +66,19 @@ public class AuthForm : Form
                 this.Close();
                 break;
             case AuthResult.InvalidKey:
-                _statusLabel.Text = "Chave inválida.";
+                _statusLabel.Text = "Invalid key.";
                 _statusLabel.ForeColor = Color.Red;
                 break;
             case AuthResult.InactiveKey:
-                _statusLabel.Text = "Chave desativada/expirada.";
+                _statusLabel.Text = "Key deactivated or expired.";
                 _statusLabel.ForeColor = Color.Red;
                 break;
             case AuthResult.HwidMismatch:
-                _statusLabel.Text = "Chave em uso em outro computador.";
+                _statusLabel.Text = "Key already in use on another computer.";
                 _statusLabel.ForeColor = Color.Red;
                 break;
             case AuthResult.Error:
-                _statusLabel.Text = "Erro de conexão. Verifique a internet.";
+                _statusLabel.Text = "Connection error. Please check your internet connection.";
                 _statusLabel.ForeColor = Color.Red;
                 break;
         }

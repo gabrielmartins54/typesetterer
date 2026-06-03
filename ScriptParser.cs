@@ -9,11 +9,28 @@ internal static partial class ScriptParser
 {
     public static List<ScriptLine> ParseText(string? text)
     {
-        var normalized = (text ?? string.Empty)
+        var cleanedText = FixBrokenUnicodeEscapes(text ?? string.Empty);
+        var normalized = cleanedText
             .Replace("\r\n", "\n", StringComparison.Ordinal)
             .Replace('\r', '\n');
 
         return ParseFormattedLines(normalized.Split('\n'));
+    }
+
+    private static string FixBrokenUnicodeEscapes(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+
+        return text
+            .Replace("u201C", "“", StringComparison.Ordinal)
+            .Replace("u201D", "”", StringComparison.Ordinal)
+            .Replace("u2019", "’", StringComparison.Ordinal)
+            .Replace("u2018", "‘", StringComparison.Ordinal)
+            .Replace("u0022", "\"", StringComparison.Ordinal)
+            .Replace("u2026", "…", StringComparison.Ordinal)
+            .Replace("u2764", "❤", StringComparison.Ordinal)
+            .Replace("uFE0F", "", StringComparison.Ordinal)
+            .Replace("u2014", "—", StringComparison.Ordinal);
     }
 
     public static string CleanSingleLine(string rawText)
