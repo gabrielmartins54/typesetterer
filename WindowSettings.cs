@@ -75,7 +75,7 @@ internal sealed class WindowSettings
         Save(settings);
     }
 
-    public static string GetIgnoredTags() => Load()?.IgnoredTags ?? string.Empty;
+    public static string GetIgnoredTags() => ScriptParser.FixBrokenUnicodeEscapes(Load()?.IgnoredTags ?? string.Empty);
 
     public static void SaveIgnoredTags(string tags)
     {

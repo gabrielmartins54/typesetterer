@@ -17,7 +17,7 @@ internal static partial class ScriptParser
         return ParseFormattedLines(normalized.Split('\n'));
     }
 
-    private static string FixBrokenUnicodeEscapes(string text)
+    internal static string FixBrokenUnicodeEscapes(string text)
     {
         if (string.IsNullOrEmpty(text)) return text;
 
