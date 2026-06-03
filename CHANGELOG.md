@@ -9,6 +9,12 @@ All notable changes to this project will be documented in this file.
 - **Sticky Menu Behavior**: Removed custom `MouseEnter` event overrides on the top menu strip items that opened dropdown menus on hover but got them stuck open. The menus now follow standard Windows UX (open on click, close on focus change/dismiss).
 - **Auto-Update System Reliability**: Relocated the background update check from `Program.cs` (triggered prior to application initialization) to the `OnLoad` handler of `MainForm.cs`. This ensures the Velopack update dialog is correctly parented and instantiated on the main STA (Single-Threaded Apartment) UI thread rather than crash-failing silently on an MTA thread pool thread.
 
+### Added
+- **Secure Licensing Proxy & Script Protection**: Implemented a secure backend API proxy model. Direct client-side queries to Firebase have been removed. The client now calls a Vercel-compatible Node.js backend.
+- **Cryptographic Signature Verification**: Validated authentication response payloads on the client using 2048-bit RSA public/private key signing (RS256) and timestamp verification to prevent replay/spoofing attacks.
+- **Dynamic Script Delivery**: Relocated the core Photoshop JSX execution script from the local assembly to the secure backend server. The client receives the encrypted script payload only upon successful server-side license verification, preventing cracking attempts via client-side patch bypasses.
+- **Product Key Creator**: Added a local administration script (`npm run create-keys`) to generate batches of 10 keys and upload them directly to Firebase.
+
 ## [2.3.2] - 2026-06-03
 
 ### Fixed
