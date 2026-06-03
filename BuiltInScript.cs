@@ -20,21 +20,44 @@ internal static class BuiltInScript
     [DllImport("oleaut32.dll", PreserveSig = false)]
     private static extern void GetActiveObject(ref Guid rclsid, IntPtr pvReserved, [MarshalAs(UnmanagedType.IUnknown)] out object ppunk);
 
-    private static object? GetActivePhotoshopInstance()
+    private static bool TryGetActiveObject(string progId, out object? obj)
     {
+        obj = null;
         try
         {
-            int hr = CLSIDFromProgID("Photoshop.Application", out Guid clsid);
+            int hr = CLSIDFromProgID(progId, out Guid clsid);
             if (hr >= 0)
             {
-                GetActiveObject(ref clsid, IntPtr.Zero, out object obj);
-                return obj;
+                GetActiveObject(ref clsid, IntPtr.Zero, out object ppunk);
+                obj = ppunk;
+                return true;
             }
         }
         catch
         {
-            // Ignore and fallback
+            // Ignore and try next
         }
+        return false;
+    }
+
+    private static object? GetActivePhotoshopInstance()
+    {
+        // 1. Try default version-independent ProgID
+        if (TryGetActiveObject("Photoshop.Application", out var obj))
+        {
+            return obj;
+        }
+
+        // 2. Try common versioned ProgIDs (from CC 2026/v270 down to CS3/v100)
+        for (int v = 280; v >= 100; v -= 10)
+        {
+            string vStr = v.ToString();
+            string majorStr = (v / 10).ToString();
+
+            if (TryGetActiveObject($"Photoshop.Application.{vStr}", out obj)) return obj;
+            if (TryGetActiveObject($"Photoshop.Application.{majorStr}", out obj)) return obj;
+        }
+
         return null;
     }
 

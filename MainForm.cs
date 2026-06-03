@@ -1,5 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
+using Velopack;
+using Velopack.Sources;
 
 namespace Typesetterer3;
 
@@ -34,6 +36,8 @@ internal sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _photoshopOwnerTimer = new();
     private IntPtr _lastPhotoshopHandle = IntPtr.Zero;
     private bool _hiddenByPhotoshopState;
+    private Rectangle? _normalBounds;
+    private FormWindowState _normalState = FormWindowState.Normal;
 
     private int _currentIndex = -1;
     private string _currentScriptName = "Untitled";
@@ -81,6 +85,37 @@ internal sealed class MainForm : Form
         base.Dispose(disposing);
     }
 
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        _ = Task.Run(() => CheckForUpdatesAsync());
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        try
+        {
+            var mgr = new UpdateManager(new GithubSource("https://github.com/gabrielmartins54/typesetterer", null, false));
+            var newVersion = await mgr.CheckForUpdatesAsync();
+            if (newVersion == null) return;
+
+            var updateInfo = newVersion;
+
+            if (IsHandleCreated)
+            {
+                Invoke(new Action(() =>
+                {
+                    using var dialog = new UpdateDialog(mgr, updateInfo);
+                    dialog.ShowDialog(this);
+                }));
+            }
+        }
+        catch
+        {
+            // Silently fail if no internet or error
+        }
+    }
+
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         _photoshopOwnerTimer.Stop();
@@ -89,6 +124,10 @@ internal sealed class MainForm : Form
             SetWindowOwner(Handle, IntPtr.Zero);
         }
         var bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        if (_hiddenByPhotoshopState && _normalBounds.HasValue)
+        {
+            bounds = _normalBounds.Value;
+        }
         WindowSettings.Save(bounds);
         base.OnFormClosing(e);
     }
@@ -191,9 +230,7 @@ internal sealed class MainForm : Form
         _progressLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
         _menuStrip.Items.Add(_progressLabel);
 
-        scriptMenu.MouseEnter += (s, e) => scriptMenu.ShowDropDown();
-        stateMenu.MouseEnter += (s, e) => stateMenu.ShowDropDown();
-        configMenu.MouseEnter += (s, e) => configMenu.ShowDropDown();
+
 
         _titleBar.Controls.Add(_menuStrip);
         _titleBar.Controls.Add(closeButton);
@@ -845,15 +882,18 @@ internal sealed class MainForm : Form
             shouldHide = PhotoshopFocusService.IsPhotoshopInMenuOrModal(photoshopHandle);
         }
 
-        const int SW_HIDE = 0;
-        const int SW_SHOWNA = 8;
-
         if (shouldHide)
         {
             if (!_hiddenByPhotoshopState)
             {
                 _hiddenByPhotoshopState = true;
-                PhotoshopFocusService.ShowWindow(Handle, SW_HIDE);
+                _normalState = WindowState;
+                _normalBounds = Bounds;
+                if (WindowState == FormWindowState.Maximized)
+                {
+                    WindowState = FormWindowState.Normal;
+                }
+                Location = new Point(-32000, -32000);
             }
         }
         else
@@ -861,7 +901,12 @@ internal sealed class MainForm : Form
             if (_hiddenByPhotoshopState)
             {
                 _hiddenByPhotoshopState = false;
-                PhotoshopFocusService.ShowWindow(Handle, SW_SHOWNA);
+                if (_normalBounds.HasValue)
+                {
+                    Bounds = _normalBounds.Value;
+                    _normalBounds = null;
+                }
+                WindowState = _normalState;
             }
         }
     }
