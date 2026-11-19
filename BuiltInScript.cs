@@ -1,8 +1,6 @@
 using System;
 using System.IO;
-using System.IO.Compression;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
 
@@ -10,9 +8,6 @@ namespace Typesetterer3;
 
 internal static class BuiltInScript
 {
-    public static string? LoadedPayloadBase64 { get; set; }
-    public static string? LoadedPayloadKey { get; set; }
-    public static string? LoadedScriptSha256 { get; set; }
 
     [DllImport("ole32.dll")]
     private static extern int CLSIDFromProgID([MarshalAs(UnmanagedType.LPWStr)] string lpszProgID, out Guid pclsid);
@@ -78,12 +73,6 @@ internal static class BuiltInScript
     {
         try
         {
-            if (string.IsNullOrEmpty(LoadedPayloadBase64))
-            {
-                MessageBox.Show("Photoshop script payload has not been downloaded or validated. Please verify your license status.", "Authentication Failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
             var jsxCode = DecodeScript();
 
             // Prefer the running instance (works with versioned ProgIDs only, e.g. Photoshop.Application.270).
@@ -217,27 +206,10 @@ internal static class BuiltInScript
 
     private static string DecodeScript()
     {
-        var payload = Convert.FromBase64String(LoadedPayloadBase64!);
-        var key = Encoding.UTF8.GetBytes(LoadedPayloadKey!);
-
-        for (var i = 0; i < payload.Length; i++)
-        {
-            payload[i] ^= key[i % key.Length];
-        }
-
-        using var input = new MemoryStream(payload);
-        using var gzip = new GZipStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        gzip.CopyTo(output);
-
-        var scriptBytes = output.ToArray();
-        var hash = Convert.ToHexString(SHA256.HashData(scriptBytes));
-        if (!string.Equals(hash, LoadedScriptSha256, StringComparison.Ordinal))
-        {
-            throw new InvalidDataException("Built-in script payload failed integrity validation.");
-        }
-
-        return Encoding.UTF8.GetString(scriptBytes);
+        using var stream = typeof(BuiltInScript).Assembly.GetManifestResourceStream("Typesetterer3.BuiltInScript.jsx")
+            ?? throw new InvalidDataException("Built-in Photoshop script resource is missing.");
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return reader.ReadToEnd();
     }
 }
 
