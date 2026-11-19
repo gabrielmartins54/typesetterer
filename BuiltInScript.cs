@@ -61,6 +61,19 @@ internal static class BuiltInScript
         return null;
     }
 
+    private static Type? FindPhotoshopType()
+    {
+        var t = Type.GetTypeFromProgID("Photoshop.Application");
+        if (t != null) return t;
+
+        for (int v = 280; v >= 100; v -= 10)
+        {
+            t = Type.GetTypeFromProgID($"Photoshop.Application.{v}") ?? Type.GetTypeFromProgID($"Photoshop.Application.{v / 10}");
+            if (t != null) return t;
+        }
+        return null;
+    }
+
     public static async Task ExecuteAsync()
     {
         try
@@ -73,16 +86,24 @@ internal static class BuiltInScript
 
             var jsxCode = DecodeScript();
 
-            Type? photoshopType = Type.GetTypeFromProgID("Photoshop.Application");
-            if (photoshopType == null)
-            {
-                MessageBox.Show("Adobe Photoshop is not detected or not registered via COM on this system.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-
+            // Prefer the running instance (works with versioned ProgIDs only, e.g. Photoshop.Application.270).
             object? app = GetActivePhotoshopInstance();
+            Type? photoshopType = app?.GetType();
             if (app == null)
             {
+                photoshopType = FindPhotoshopType();
+                if (photoshopType == null)
+                {
+                    MessageBox.Show(
+                        "Adobe Photoshop is not detected or not registered via COM on this system.
+
+" +
+                        "Make sure Photoshop is running and was launched with the same permissions (both normal or both as administrator). " +
+                        "If it still fails, repair/reinstall Photoshop to re-register its COM server.",
+                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
                 try
                 {
                     app = Activator.CreateInstance(photoshopType);
@@ -90,8 +111,12 @@ internal static class BuiltInScript
                 catch (Exception ex)
                 {
                     MessageBox.Show(
-                        "Failed to connect to Adobe Photoshop COM server.\n\n" +
-                        "This can happen if Photoshop is busy, displaying a modal dialog (like Layer Styles), running with different administrator permissions, or not running.\n\n" +
+                        "Failed to connect to Adobe Photoshop COM server.
+
+" +
+                        "This can happen if Photoshop is busy, displaying a modal dialog (like Layer Styles), running with different administrator permissions, or not running.
+
+" +
                         $"Details: {ex.Message}",
                         "Photoshop COM Connection Failed",
                         MessageBoxButtons.OK,
@@ -100,7 +125,7 @@ internal static class BuiltInScript
                 }
             }
 
-            if (app == null)
+            if (app == null || photoshopType == null)
             {
                 MessageBox.Show("Failed to connect to Adobe Photoshop COM server.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;

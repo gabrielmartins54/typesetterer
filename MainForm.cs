@@ -289,6 +289,12 @@ internal sealed class MainForm : Form
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")]
+    private static extern IntPtr GetWindowLongPtr64(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLong")]
+    private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
+
     private const int GWL_HWNDPARENT = -8;
     private static readonly IntPtr HWND_TOPMOST = new(-1);
     private const uint SWP_NOMOVE = 0x0002;
@@ -1150,22 +1156,36 @@ internal sealed class MainForm : Form
             // Ignore potential issues enumerating processes
         }
 
-        if (photoshopHandle != _lastPhotoshopHandle)
+        if (photoshopHandle == IntPtr.Zero)
         {
-            _lastPhotoshopHandle = photoshopHandle;
-            if (IsHandleCreated)
-            {
-                SetWindowOwner(Handle, photoshopHandle);
-                SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            }
+            // Photoshop busy/closed: keep current owner instead of detaching (prevents the window "losing" Photoshop).
+            return IntPtr.Zero;
         }
 
+        _lastPhotoshopHandle = photoshopHandle;
+        EnsureOwnedBy(photoshopHandle);
+
         return photoshopHandle;
+    }
+
+    private void EnsureOwnedBy(IntPtr owner)
+    {
+        if (!IsHandleCreated || owner == IntPtr.Zero) return;
+
+        // Re-apply every time the owner differs (handle recreated, owner reset, Photoshop restarted).
+        IntPtr current = IntPtr.Size == 8 ? GetWindowLongPtr64(Handle, GWL_HWNDPARENT) : GetWindowLong32(Handle, GWL_HWNDPARENT);
+        if (current != owner)
+        {
+            SetWindowOwner(Handle, owner);
+            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
     }
 
     private void OnPhotoshopTimerTick(object? sender, EventArgs e)
     {
         IntPtr photoshopHandle = GetPhotoshopHandle();
+        // Cached-handle path skips GetPhotoshopHandle's owner check, so verify here too.
+        EnsureOwnedBy(photoshopHandle);
 
         if (WindowState == FormWindowState.Minimized) return;
 
