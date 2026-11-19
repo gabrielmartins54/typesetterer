@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.8] - 2026-06-16
+
+### Fixed
+- **Punctuation-Only Tags**: Fixed a bug where punctuation-only tags (such as `"" ""`) were not stripped from the beginning of lines due to an incorrect punctuation check in `CleanLeading`. They are now correctly cleaned, restoring accurate copy/paste behavior and clean list view rendering.
+- **Empty Tag Line Ignoring**: Added logic in `ScriptParser` to automatically skip and ignore lines that contain only the tag (with optional whitespace and punctuation). This allows users to easily skip numeric page marks (like `6`, `7`, `8`, `6.`, `7 -`) by adding them to the tags list, while safely preserving punctuation-only dialogue lines (like `...` or `...?!`) for characters or speech bubbles.
+
 ## [2.3.3] - 2026-06-03
 
 ### Fixed

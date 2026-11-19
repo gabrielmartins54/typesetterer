@@ -21,17 +21,31 @@ internal sealed class MainForm : Form
     private readonly Label _statusLabel = new();
     private readonly ToolStripMenuItem _clipMenuItem = new("Paste from clipboard");
     private readonly ToolStripMenuItem _fileMenuItem = new("Open file");
+    private readonly ToolStripMenuItem _gdocsMenuItem = new("Google Doc live link... [Beta]");
+    private readonly ToolStripLabel _changesAlertLabel = new();
+    private readonly System.Windows.Forms.Timer _gdocsSyncTimer = new();
+    private string? _currentGoogleDocUrl;
+    private string? _lastSyncedGoogleDocContent;
+    private bool _isSyncingGoogleDoc;
+    private bool _hasChangesAbove;
+    private bool _isFetchingGoogleDoc;
     private readonly ToolStripMenuItem _saveS1MenuItem = new("Save work in slot 1");
     private readonly ToolStripMenuItem _saveS2MenuItem = new("Save work in slot 2");
     private readonly ToolStripMenuItem _loadS1MenuItem = new("Load slot 1");
     private readonly ToolStripMenuItem _loadS2MenuItem = new("Load slot 2");
     private readonly ToolStripMenuItem _tagsMenuItem = new("Tags");
+    private readonly ToolStripMenuItem _linesMenuItem = new("Lines");
     private readonly ToolStripMenuItem _keyMenuItem = new("Pasting hotkey");
     private readonly ToolStripMenuItem _scriptKeyMenuItem = new("Script hotkey");
     private readonly MenuStrip _menuStrip = new();
     private readonly Panel _titleBar = new();
     private readonly ToolTip _toolTip = new();
     private readonly List<ScriptLine> _lines = [];
+
+    private string? _lastRawText;
+    private string? _lastRtfText;
+    private string? _lastHtmlText;
+    private string? _lastFilePath;
 
     private readonly System.Windows.Forms.Timer _photoshopOwnerTimer = new();
     private IntPtr _lastPhotoshopHandle = IntPtr.Zero;
@@ -40,6 +54,7 @@ internal sealed class MainForm : Form
     private FormWindowState _normalState = FormWindowState.Normal;
 
     private int _currentIndex = -1;
+    private int _highestReachedIndex = -1;
     private string _currentScriptName = "Untitled";
 
     public MainForm()
@@ -72,6 +87,7 @@ internal sealed class MainForm : Form
     {
         if (disposing)
         {
+            _gdocsSyncTimer.Dispose();
             _photoshopOwnerTimer.Dispose();
             _hotkeys.Dispose();
             _lineList.Dispose();
@@ -205,6 +221,7 @@ internal sealed class MainForm : Form
         scriptMenu.DropDown.ForeColor = TextWhite;
         scriptMenu.DropDownItems.Add(_clipMenuItem);
         scriptMenu.DropDownItems.Add(_fileMenuItem);
+        scriptMenu.DropDownItems.Add(_gdocsMenuItem);
 
         var stateMenu = new ToolStripMenuItem("State");
         stateMenu.DropDown.BackColor = PanelBlack;
@@ -218,6 +235,7 @@ internal sealed class MainForm : Form
         configMenu.DropDown.BackColor = PanelBlack;
         configMenu.DropDown.ForeColor = TextWhite;
         configMenu.DropDownItems.Add(_tagsMenuItem);
+        configMenu.DropDownItems.Add(_linesMenuItem);
         configMenu.DropDownItems.Add(_keyMenuItem);
         configMenu.DropDownItems.Add(_scriptKeyMenuItem);
 
@@ -228,6 +246,15 @@ internal sealed class MainForm : Form
         _progressLabel.Alignment = ToolStripItemAlignment.Right;
         _progressLabel.ForeColor = TextMuted;
         _progressLabel.Font = new Font("Segoe UI", 9F, FontStyle.Bold);
+
+        _changesAlertLabel.Alignment = ToolStripItemAlignment.Right;
+        _changesAlertLabel.ForeColor = Color.FromArgb(255, 193, 7); // Amber
+        _changesAlertLabel.Font = new Font("Segoe UI", 8.5F, FontStyle.Bold);
+        _changesAlertLabel.Text = "⚠️ Changes above!";
+        _changesAlertLabel.ToolTipText = "Changes were detected in Google Docs above your active line. Click to jump to change.";
+        _changesAlertLabel.Visible = false;
+
+        _menuStrip.Items.Add(_changesAlertLabel);
         _menuStrip.Items.Add(_progressLabel);
 
 
@@ -296,13 +323,18 @@ internal sealed class MainForm : Form
         WireTitleBarEvents();
         _clipMenuItem.Click += (_, _) => LoadFromClipboard();
         _fileMenuItem.Click += (_, _) => LoadFromFile();
+        _gdocsMenuItem.Click += (_, _) => PromptForGoogleDocLink();
         _saveS1MenuItem.Click += (_, _) => SaveCurrentSlot(1);
         _saveS2MenuItem.Click += (_, _) => SaveCurrentSlot(2);
         _loadS1MenuItem.Click += (_, _) => RestoreSaveSlot(1);
         _loadS2MenuItem.Click += (_, _) => RestoreSaveSlot(2);
         _tagsMenuItem.Click += (_, _) => PromptForTags();
+        _linesMenuItem.Click += (_, _) => PromptForLines();
         _keyMenuItem.Click += (_, _) => PromptForHotkey();
         _scriptKeyMenuItem.Click += (_, _) => PromptForScriptHotkey();
+        _gdocsSyncTimer.Interval = 3000;
+        _gdocsSyncTimer.Tick += async (_, _) => await PollGoogleDocsSyncAsync();
+        _changesAlertLabel.Click += (_, _) => AcknowledgeChangesAbove();
         _lineList.DrawItem += DrawLineItem;
         _lineList.MouseDown += (_, e) =>
         {
@@ -399,6 +431,7 @@ internal sealed class MainForm : Form
                     tagList.Remove(currentTag);
                     WindowSettings.SaveIgnoredTags(string.Join(",", tagList));
                     RefreshTags();
+                    ReapplySettingsToCurrentScript();
                 });
                 flowPanel.Controls.Add(pill);
             }
@@ -413,6 +446,7 @@ internal sealed class MainForm : Form
                 tagList.Add(text);
                 WindowSettings.SaveIgnoredTags(string.Join(",", tagList));
                 RefreshTags();
+                ReapplySettingsToCurrentScript();
             }
             addTextBox.Clear();
             addTextBox.Focus();
@@ -430,6 +464,180 @@ internal sealed class MainForm : Form
 
         form.Load += (s, e) => RefreshTags();
         form.ShowDialog(this);
+    }
+
+    private void PromptForLines()
+    {
+        using var form = new Form
+        {
+            Width = 380,
+            Height = 320,
+            Text = "Manage Ignored Lines",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedToolWindow,
+            BackColor = AppBlack,
+            ForeColor = TextWhite,
+            TopMost = true,
+            KeyPreview = true,
+        };
+
+        var descLabel = new Label
+        {
+            Text = "Lines matching or starting with these entries will be greyed out and skipped.",
+            Location = new Point(12, 10),
+            Width = 340,
+            Height = 35,
+            ForeColor = TextMuted,
+            Font = new Font("Segoe UI", 8.5F),
+        };
+
+        var flowPanel = new FlowLayoutPanel
+        {
+            Location = new Point(12, 50),
+            Width = 340,
+            Height = 170,
+            BackColor = PanelBlack,
+            AutoScroll = true,
+            Padding = new Padding(6),
+        };
+
+        var addTextBox = new TextBox
+        {
+            Location = new Point(12, 232),
+            Width = 250,
+            Height = 25,
+            BackColor = PanelBlack,
+            ForeColor = TextWhite,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 10F),
+        };
+
+        var btnAdd = new Button
+        {
+            Text = "Add",
+            Location = new Point(272, 231),
+            Width = 80,
+            Height = 26,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = AccentBlue,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+            Cursor = Cursors.Hand,
+        };
+        btnAdd.FlatAppearance.BorderSize = 0;
+
+        form.Controls.Add(descLabel);
+        form.Controls.Add(flowPanel);
+        form.Controls.Add(addTextBox);
+        form.Controls.Add(btnAdd);
+
+        List<string> ignoredList = WindowSettings.GetIgnoredLines()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToList();
+
+        void RefreshIgnoredLines()
+        {
+            flowPanel.Controls.Clear();
+            foreach (var item in ignoredList)
+            {
+                var currentItem = item;
+                var pill = CreateTagPill(currentItem, () =>
+                {
+                    ignoredList.Remove(currentItem);
+                    WindowSettings.SaveIgnoredLines(string.Join(",", ignoredList));
+                    RefreshIgnoredLines();
+                    ReapplySettingsToCurrentScript();
+                });
+                flowPanel.Controls.Add(pill);
+            }
+        }
+
+        void AddCurrentLine()
+        {
+            var text = addTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(text)) return;
+            if (!ignoredList.Contains(text, StringComparer.OrdinalIgnoreCase))
+            {
+                ignoredList.Add(text);
+                WindowSettings.SaveIgnoredLines(string.Join(",", ignoredList));
+                RefreshIgnoredLines();
+                ReapplySettingsToCurrentScript();
+            }
+            addTextBox.Clear();
+            addTextBox.Focus();
+        }
+
+        btnAdd.Click += (s, e) => AddCurrentLine();
+        addTextBox.KeyDown += (s, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                e.SuppressKeyPress = true;
+                AddCurrentLine();
+            }
+        };
+
+        form.Load += (s, e) => RefreshIgnoredLines();
+        form.ShowDialog(this);
+    }
+
+    private void ReapplySettingsToCurrentScript()
+    {
+        if (_lines.Count == 0 && string.IsNullOrEmpty(_lastRawText) && string.IsNullOrEmpty(_lastRtfText) && string.IsNullOrEmpty(_lastHtmlText) && string.IsNullOrEmpty(_lastFilePath))
+        {
+            return;
+        }
+
+        List<ScriptLine>? newLines = null;
+
+        if (!string.IsNullOrEmpty(_lastFilePath) && File.Exists(_lastFilePath))
+        {
+            try { newLines = ScriptParser.ParseFile(_lastFilePath); } catch { }
+        }
+        else if (!string.IsNullOrEmpty(_lastRtfText))
+        {
+            newLines = ScriptParser.ParseRtf(_lastRtfText);
+        }
+        else if (!string.IsNullOrEmpty(_lastHtmlText))
+        {
+            newLines = ScriptParser.ParseHtml(_lastHtmlText);
+        }
+        else if (!string.IsNullOrEmpty(_lastRawText))
+        {
+            newLines = ScriptParser.ParseText(_lastRawText);
+        }
+
+        if (newLines == null)
+        {
+            var rawTextCombined = string.Join("\n", _lines.Select(l => l.RawText));
+            newLines = ScriptParser.ParseText(rawTextCombined);
+        }
+
+        var pastedSet = new HashSet<string>(_lines.Where(l => l.IsPasted).Select(l => l.CleanText));
+
+        _lines.Clear();
+        foreach (var line in newLines)
+        {
+            if (pastedSet.Contains(line.CleanText))
+            {
+                line.IsPasted = true;
+            }
+            _lines.Add(line);
+        }
+
+        if (_currentIndex >= _lines.Count)
+        {
+            _currentIndex = FindNextPasteable(-1);
+        }
+        else if (_currentIndex < 0 && _lines.Count > 0)
+        {
+            _currentIndex = FindNextPasteable(-1);
+        }
+
+        RefreshLineList();
+        UpdateState();
     }
 
     private Panel CreateTagPill(string tag, Action onDelete)
@@ -583,18 +791,46 @@ internal sealed class MainForm : Form
 
     private void LoadFromClipboard()
     {
-        if (!Clipboard.ContainsText(TextDataFormat.UnicodeText) && !Clipboard.ContainsText(TextDataFormat.Text))
+        StopGoogleDocsSync();
+        if (Clipboard.ContainsText(TextDataFormat.Rtf))
         {
-            UpdateState("Clipboard does not contain text.");
+            var rtf = Clipboard.GetText(TextDataFormat.Rtf);
+            _lastRtfText = rtf;
+            _lastHtmlText = null;
+            _lastRawText = null;
+            _lastFilePath = null;
+            LoadLines(ScriptParser.ParseRtf(rtf), "Clipboard", "Loaded rich text from clipboard.");
             return;
         }
 
-        var text = Clipboard.GetText(TextDataFormat.UnicodeText);
-        LoadLines(ScriptParser.ParseText(text), "Clipboard", "Loaded clipboard text.");
+        if (Clipboard.ContainsText(TextDataFormat.Html))
+        {
+            var html = Clipboard.GetText(TextDataFormat.Html);
+            _lastRtfText = null;
+            _lastHtmlText = html;
+            _lastRawText = null;
+            _lastFilePath = null;
+            LoadLines(ScriptParser.ParseHtml(html), "Clipboard", "Loaded HTML from clipboard.");
+            return;
+        }
+
+        if (Clipboard.ContainsText(TextDataFormat.UnicodeText) || Clipboard.ContainsText(TextDataFormat.Text))
+        {
+            var text = Clipboard.GetText(TextDataFormat.UnicodeText);
+            _lastRtfText = null;
+            _lastHtmlText = null;
+            _lastRawText = text;
+            _lastFilePath = null;
+            LoadLines(ScriptParser.ParseText(text), "Clipboard", "Loaded clipboard text.");
+            return;
+        }
+
+        UpdateState("Clipboard does not contain text.");
     }
 
     private void LoadFromFile()
     {
+        StopGoogleDocsSync();
         using var dialog = new OpenFileDialog
         {
             Title = "Select script file",
@@ -608,6 +844,10 @@ internal sealed class MainForm : Form
         try
         {
             var fileName = Path.GetFileName(dialog.FileName);
+            _lastFilePath = dialog.FileName;
+            _lastRtfText = null;
+            _lastHtmlText = null;
+            _lastRawText = null;
             LoadLines(ScriptParser.ParseFile(dialog.FileName), fileName, $"Loaded {fileName}.");
         }
         catch (Exception ex)
@@ -619,9 +859,10 @@ internal sealed class MainForm : Form
     private void LoadLines(List<ScriptLine> lines, string scriptName, string status)
     {
         _lines.Clear();
-        _lines.AddRange(lines.Where(line => line.Pasteable));
+        _lines.AddRange(lines);
         _currentScriptName = scriptName;
         _currentIndex = FindNextPasteable(-1);
+        _highestReachedIndex = _currentIndex;
         RefreshLineList();
         UpdateState(status);
     }
@@ -659,6 +900,7 @@ internal sealed class MainForm : Form
 
         // Advance selection only. Do not pre-copy next line.
         _currentIndex = FindNextPasteable(_currentIndex);
+        _highestReachedIndex = Math.Max(_highestReachedIndex, _currentIndex);
         UpdateState(_currentIndex < 0
             ? "End of script."
             : $"Line {ReadableLineNumber(pastedIndex)} pasted. Next line selected.");
@@ -667,6 +909,7 @@ internal sealed class MainForm : Form
     private void SelectLine(int index, string status)
     {
         _currentIndex = index;
+        _highestReachedIndex = Math.Max(_highestReachedIndex, index);
         _lineList.SelectedIndex = index;
         UpdateState(status);
     }
@@ -712,20 +955,28 @@ internal sealed class MainForm : Form
             return;
         }
 
+        var ignoredLines = WindowSettings.GetIgnoredLines()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToArray();
+
         _lines.Clear();
         foreach (var saved in saveSlot.Lines)
         {
+            var isIgnored = ScriptParser.IsIgnoredLine(saved.RawText, ignoredLines);
             _lines.Add(new ScriptLine
             {
                 SourceNumber = 0, // Not strictly needed for restore
                 RawText = saved.RawText,
                 CleanText = ScriptParser.CleanSingleLine(saved.RawText),
                 IsPasted = saved.IsPasted,
-                Pasteable = true
+                Pasteable = !isIgnored
             });
         }
         _currentScriptName = string.IsNullOrWhiteSpace(saveSlot.Name) ? $"Slot {slot}" : saveSlot.Name;
         _currentIndex = saveSlot.CurrentIndex;
+        _highestReachedIndex = _currentIndex;
         RefreshLineList();
         UpdateState($"Restored {_currentScriptName} from slot {slot}.");
     }
@@ -759,6 +1010,7 @@ internal sealed class MainForm : Form
 
     private void RefreshLineList()
     {
+        int saveTopIndex = _lineList.TopIndex;
         _lineList.BeginUpdate();
         _lineList.Items.Clear();
         foreach (var line in _lines)
@@ -766,6 +1018,10 @@ internal sealed class MainForm : Form
             _lineList.Items.Add(line);
         }
 
+        if (saveTopIndex >= 0 && saveTopIndex < _lineList.Items.Count)
+        {
+            _lineList.TopIndex = saveTopIndex;
+        }
         _lineList.EndUpdate();
     }
 
@@ -782,7 +1038,10 @@ internal sealed class MainForm : Form
             else
             {
                 progressText = $"Line {ReadableLineNumber(_currentIndex)} of {total}";
-                _lineList.SelectedIndex = _currentIndex;
+                if (_currentIndex >= 0 && _currentIndex < _lineList.Items.Count && _lineList.SelectedIndex != _currentIndex)
+                {
+                    _lineList.SelectedIndex = _currentIndex;
+                }
             }
         }
 
@@ -795,6 +1054,31 @@ internal sealed class MainForm : Form
         else
         {
             _progressLabel.Text = progressText;
+        }
+
+        // Check for modified lines out of viewport view
+        int topIndex = _lineList.TopIndex;
+        int visibleCount = Math.Max(1, _lineList.Height / Math.Max(1, _lineList.ItemHeight));
+        int bottomIndex = topIndex + visibleCount;
+
+        bool hasModifiedAboveView = _lines.Take(Math.Min(topIndex, _lines.Count)).Any(l => l.IsModified);
+        bool hasModifiedBelowView = _lines.Skip(Math.Max(0, bottomIndex)).Any(l => l.IsModified);
+
+        if (_hasChangesAbove || hasModifiedAboveView)
+        {
+            _changesAlertLabel.Text = "⬆️ Changes above!";
+            _changesAlertLabel.ToolTipText = "Line changes detected above your current view. Click to scroll to changes.";
+            _changesAlertLabel.Visible = true;
+        }
+        else if (hasModifiedBelowView)
+        {
+            _changesAlertLabel.Text = "⬇️ Changes below!";
+            _changesAlertLabel.ToolTipText = "Line changes detected below your current view. Click to scroll to changes.";
+            _changesAlertLabel.Visible = true;
+        }
+        else
+        {
+            _changesAlertLabel.Visible = false;
         }
 
         _statusLabel.Text = displayStatus;
@@ -814,8 +1098,17 @@ internal sealed class MainForm : Form
         e.Graphics.FillRectangle(background, e.Bounds);
         e.Graphics.SmoothingMode = SmoothingMode.None;
 
-        var textRect = new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 14, e.Bounds.Height);
-        var displayColor = line.IsPasted && !isCurrent ? TextMuted : foreColor;
+        if (line.IsModified)
+        {
+            using var alertBrush = new SolidBrush(Color.FromArgb(255, 193, 7)); // Amber indicator
+            e.Graphics.FillRectangle(alertBrush, e.Bounds.Left, e.Bounds.Top + 2, 4, e.Bounds.Height - 4);
+        }
+
+        var textRect = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 16, e.Bounds.Height);
+        bool isGreyed = line.IsPasted || (e.Index < _highestReachedIndex);
+        var displayColor = !line.Pasteable
+            ? Color.FromArgb(85, 95, 110)
+            : (isGreyed && !isCurrent ? TextMuted : foreColor);
         TextRenderer.DrawText(e.Graphics, line.RawText, Font, textRect, displayColor, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
         using var divider = new Pen(isCurrent ? Color.FromArgb(92, 146, 245) : BorderBlack);
@@ -911,9 +1204,292 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void RunBuiltInScript()
+    private async void RunBuiltInScript()
     {
-        BuiltInScript.Execute();
+        // If Photoshop is in inline text editing mode, it rejects all COM calls
+        // with RPC_E_SERVERCALL_RETRYLATER. Send Escape to commit/exit text editing
+        // before we attempt the DoJavaScript COM call. Photoshop versions 26.x+
+        // are stricter about this than earlier versions.
+        if (PhotoshopFocusService.IsPhotoshopForeground())
+        {
+            SendKeys.SendWait("^{ENTER}");  // Ctrl+Enter commits text edit in PS
+            await Task.Delay(150);         // Let PS finish the mode transition
+        }
+
+        await BuiltInScript.ExecuteAsync();
+    }
+
+    private void PromptForGoogleDocLink()
+    {
+        using var dialog = new GoogleDocDialog(_currentGoogleDocUrl ?? string.Empty, _isSyncingGoogleDoc);
+        if (dialog.ShowDialog(this) == DialogResult.OK)
+        {
+            if (dialog.StopRequested)
+            {
+                StopGoogleDocsSync();
+                UpdateState("Google Docs live sync stopped.");
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(dialog.Url))
+            {
+                StartGoogleDocsSync(dialog.Url);
+            }
+        }
+    }
+
+    private async void StartGoogleDocsSync(string url)
+    {
+        _currentGoogleDocUrl = url;
+        _currentScriptName = "Google Doc (Live)";
+        _lastSyncedGoogleDocContent = null;
+        _isSyncingGoogleDoc = true;
+        _hasChangesAbove = false;
+
+        _gdocsSyncTimer.Interval = 3000;
+        _gdocsSyncTimer.Start();
+
+        UpdateState("Connecting to Google Docs...");
+        await PollGoogleDocsSyncAsync();
+    }
+
+    private void StopGoogleDocsSync()
+    {
+        _gdocsSyncTimer.Stop();
+        _isSyncingGoogleDoc = false;
+        _currentGoogleDocUrl = null;
+        _hasChangesAbove = false;
+        _changesAlertLabel.Visible = false;
+        UpdateState();
+    }
+
+    private async Task PollGoogleDocsSyncAsync()
+    {
+        if (!_isSyncingGoogleDoc || string.IsNullOrEmpty(_currentGoogleDocUrl) || _isFetchingGoogleDoc)
+            return;
+
+        _isFetchingGoogleDoc = true;
+        try
+        {
+            var (content, isHtml, error) = await GoogleDocsService.FetchDocumentContentAsync(_currentGoogleDocUrl);
+            if (!string.IsNullOrEmpty(error) || string.IsNullOrEmpty(content))
+            {
+                if (!string.IsNullOrEmpty(error))
+                {
+                    UpdateState(error);
+                }
+                return;
+            }
+
+            if (content == _lastSyncedGoogleDocContent)
+            {
+                return; // No changes in remote doc
+            }
+
+            _lastSyncedGoogleDocContent = content;
+            var newLines = isHtml ? ScriptParser.ParseHtml(content) : ScriptParser.ParseText(content);
+            if (newLines.Count == 0) return;
+
+            ApplyGoogleDocUpdate(newLines);
+        }
+        catch (Exception ex)
+        {
+            UpdateState($"Google Sync error: {ex.Message}");
+        }
+        finally
+        {
+            _isFetchingGoogleDoc = false;
+        }
+    }
+
+    private void ApplyGoogleDocUpdate(List<ScriptLine> newLines)
+    {
+        // Preserve pasted state from previous lines
+        var pastedLines = _lines.Where(l => l.IsPasted).ToList();
+        var newLinesSet = new HashSet<string>(newLines.Select(l => l.CleanText), StringComparer.OrdinalIgnoreCase);
+
+        foreach (var newLine in newLines)
+        {
+            if (pastedLines.Any(p => p.CleanText.Equals(newLine.CleanText, StringComparison.OrdinalIgnoreCase)))
+            {
+                newLine.IsPasted = true;
+            }
+        }
+
+        // Protect already-pasted lines from being erased if a colored revision was added AFTER pasting
+        for (int i = 0; i < _lines.Count; i++)
+        {
+            var oldLine = _lines[i];
+            if (oldLine.IsPasted && !newLinesSet.Contains(oldLine.CleanText))
+            {
+                int insertIdx = Math.Min(i, newLines.Count);
+                newLines.Insert(insertIdx, oldLine);
+                newLinesSet.Add(oldLine.CleanText);
+            }
+        }
+
+        bool changesDetectedAbove = false;
+
+        if (_currentIndex >= 0 && _currentIndex < _lines.Count)
+        {
+            var oldLinesAbove = _lines.Take(_currentIndex).Select(l => l.CleanText).ToList();
+
+            // Find matching index of current line in newLines using context-aware matching to avoid jumping on duplicate lines
+            int newActiveIndex = FindBestMatchingIndex(_lines, _currentIndex, newLines);
+
+            if (newActiveIndex >= 0)
+            {
+                var newLinesAbove = newLines.Take(newActiveIndex).Select(l => l.CleanText).ToList();
+                if (!oldLinesAbove.SequenceEqual(newLinesAbove))
+                {
+                    changesDetectedAbove = true;
+                    var oldSet = new HashSet<string>(oldLinesAbove);
+                    for (int i = 0; i < newActiveIndex; i++)
+                    {
+                        if (!oldSet.Contains(newLines[i].CleanText))
+                        {
+                            newLines[i].IsModified = true;
+                        }
+                    }
+                }
+                _currentIndex = newActiveIndex;
+                if (_highestReachedIndex >= 0 && _highestReachedIndex < _lines.Count)
+                {
+                    int remappedHighest = FindBestMatchingIndex(_lines, _highestReachedIndex, newLines);
+                    _highestReachedIndex = remappedHighest >= 0 ? Math.Max(remappedHighest, _currentIndex) : _currentIndex;
+                }
+                else
+                {
+                    _highestReachedIndex = Math.Max(_highestReachedIndex, _currentIndex);
+                }
+            }
+            else
+            {
+                if (oldLinesAbove.Count > 0)
+                {
+                    changesDetectedAbove = true;
+                }
+                if (_currentIndex >= newLines.Count)
+                {
+                    _currentIndex = FindNextPasteable(-1);
+                    _highestReachedIndex = _currentIndex;
+                }
+            }
+        }
+        else
+        {
+            _currentIndex = FindNextPasteable(-1);
+            _highestReachedIndex = _currentIndex;
+        }
+
+        // If newLines are identical to current _lines, avoid unnecessary UI refreshes
+        if (_lines.Count == newLines.Count)
+        {
+            bool identical = true;
+            for (int i = 0; i < _lines.Count; i++)
+            {
+                if (_lines[i].RawText != newLines[i].RawText || _lines[i].IsPasted != newLines[i].IsPasted)
+                {
+                    identical = false;
+                    break;
+                }
+            }
+            if (identical) return;
+        }
+
+        int saveTopIndex = _lineList.TopIndex;
+
+        _lines.Clear();
+        _lines.AddRange(newLines);
+
+        if (changesDetectedAbove)
+        {
+            _hasChangesAbove = true;
+        }
+
+        RefreshLineList();
+        if (saveTopIndex >= 0 && saveTopIndex < _lineList.Items.Count)
+        {
+            _lineList.TopIndex = saveTopIndex;
+        }
+
+        UpdateState(_hasChangesAbove ? "Changes detected above current line!" : "Live synced with Google Docs.");
+    }
+
+    private void AcknowledgeChangesAbove()
+    {
+        _hasChangesAbove = false;
+        // Jump to first modified line if any
+        int modifiedIndex = _lines.FindIndex(l => l.IsModified);
+        if (modifiedIndex >= 0 && modifiedIndex < _lines.Count)
+        {
+            _lineList.SelectedIndex = modifiedIndex;
+            _lineList.TopIndex = Math.Max(0, modifiedIndex - 2);
+        }
+        
+        // Clear modified flags
+        foreach (var l in _lines)
+        {
+            l.IsModified = false;
+        }
+
+        RefreshLineList();
+        UpdateState("Acknowledged changes above.");
+    }
+
+    private static int FindBestMatchingIndex(List<ScriptLine> oldLines, int oldIndex, List<ScriptLine> newLines)
+    {
+        if (oldIndex < 0 || oldIndex >= oldLines.Count || newLines.Count == 0)
+            return -1;
+
+        var targetText = oldLines[oldIndex].CleanText;
+
+        var candidates = new List<int>();
+        for (int i = 0; i < newLines.Count; i++)
+        {
+            if (newLines[i].CleanText == targetText)
+            {
+                candidates.Add(i);
+            }
+        }
+
+        if (candidates.Count == 0) return -1;
+        if (candidates.Count == 1) return candidates[0];
+
+        int bestCandidate = candidates[0];
+        double bestScore = double.MinValue;
+
+        for (int c = 0; c < candidates.Count; c++)
+        {
+            int candIdx = candidates[c];
+            int distance = Math.Abs(candIdx - oldIndex);
+
+            int contextScore = 0;
+            // Check preceding line
+            if (oldIndex > 0 && candIdx > 0 && oldLines[oldIndex - 1].CleanText == newLines[candIdx - 1].CleanText)
+            {
+                contextScore += 10;
+            }
+            // Check 2 lines back
+            if (oldIndex > 1 && candIdx > 1 && oldLines[oldIndex - 2].CleanText == newLines[candIdx - 2].CleanText)
+            {
+                contextScore += 5;
+            }
+            // Check succeeding line
+            if (oldIndex + 1 < oldLines.Count && candIdx + 1 < newLines.Count && oldLines[oldIndex + 1].CleanText == newLines[candIdx + 1].CleanText)
+            {
+                contextScore += 10;
+            }
+
+            double score = contextScore - (distance * 0.1);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestCandidate = candIdx;
+            }
+        }
+
+        return bestCandidate;
     }
 
     private sealed class DarkColorTable : ProfessionalColorTable

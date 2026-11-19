@@ -26,6 +26,10 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
+
+        // Register COM message filter early so all Photoshop COM interactions
+        // (GetActiveObject, DoJavaScript, etc.) can negotiate retries when PS is busy.
+        ComMessageFilter.Register();
         
         // Verifica se o PC já tem uma chave vinculada e ativa
         var authService = new AuthService("https://typesetterer-fb516-default-rtdb.firebaseio.com/", "AIzaSyAKhMr5RDkj2drfQc7p2hsk43CGxEOGX48");

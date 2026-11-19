@@ -1,6 +1,9 @@
+using System.Drawing;
 using System.IO.Compression;
+using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Windows.Forms;
 using System.Xml.Linq;
 
 namespace Typesetterer3;
@@ -21,7 +24,8 @@ internal static partial class ScriptParser
     {
         if (string.IsNullOrEmpty(text)) return text;
 
-        return text
+        var decoded = WebUtility.HtmlDecode(text)
+            .Replace('\u00A0', ' ')
             .Replace("u201C", "“", StringComparison.Ordinal)
             .Replace("u201D", "”", StringComparison.Ordinal)
             .Replace("u2019", "’", StringComparison.Ordinal)
@@ -31,6 +35,8 @@ internal static partial class ScriptParser
             .Replace("u2764", "❤", StringComparison.Ordinal)
             .Replace("uFE0F", "", StringComparison.Ordinal)
             .Replace("u2014", "—", StringComparison.Ordinal);
+
+        return decoded;
     }
 
     public static string CleanSingleLine(string rawText)
@@ -61,6 +67,37 @@ internal static partial class ScriptParser
             .ToArray();
     }
 
+    private static string[] GetIgnoredLines()
+    {
+        return WindowSettings.GetIgnoredLines()
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => t.Trim())
+            .Where(t => t.Length > 0)
+            .ToArray();
+    }
+
+    internal static bool IsIgnoredLine(string line, string[] ignoredLines)
+    {
+        foreach (var entry in ignoredLines)
+        {
+            if (line.Equals(entry, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (line.StartsWith(entry, StringComparison.OrdinalIgnoreCase))
+            {
+                if (line.Length > entry.Length && char.IsLetter(line[entry.Length]))
+                {
+                    continue;
+                }
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static string ReadDocx(string path)
     {
         using var archive = ZipFile.OpenRead(path);
@@ -69,32 +106,37 @@ internal static partial class ScriptParser
         var xml = XDocument.Load(stream);
         XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         var paragraphs = xml.Descendants(w + "p").ToList();
-        var removedIndexes = new HashSet<int>();
 
-        var isColored = new bool[paragraphs.Count];
+        var formatted = new List<FormattedParagraph>();
         for (var i = 0; i < paragraphs.Count; i++)
         {
-            isColored[i] = HasColoredText(paragraphs[i], w);
+            var pieces = paragraphs[i].Descendants(w + "t").Select(node => node.Value);
+            var text = string.Concat(pieces);
+            var isColored = HasColoredText(paragraphs[i], w);
+            formatted.Add(new FormattedParagraph { Text = text, IsColored = isColored });
         }
 
+        return FilterColoredParagraphs(formatted);
+    }
+
+    private static string FilterColoredParagraphs(List<FormattedParagraph> paragraphs)
+    {
+        var removedIndexes = new HashSet<int>();
         var idx = 0;
         while (idx < paragraphs.Count)
         {
-            if (isColored[idx])
+            if (paragraphs[idx].IsColored)
             {
-                // Find the length of this colored run
                 var start = idx;
-                while (idx < paragraphs.Count && isColored[idx])
+                while (idx < paragraphs.Count && paragraphs[idx].IsColored)
                 {
                     idx++;
                 }
                 var length = idx - start;
-
-                // Delete up to 'length' preceding black paragraphs
                 var deleteStart = Math.Max(0, start - length);
                 for (var j = deleteStart; j < start; j++)
                 {
-                    if (!isColored[j])
+                    if (!paragraphs[j].IsColored)
                     {
                         removedIndexes.Add(j);
                     }
@@ -110,12 +152,245 @@ internal static partial class ScriptParser
         for (var i = 0; i < paragraphs.Count; i++)
         {
             if (removedIndexes.Contains(i)) continue;
-
-            var pieces = paragraphs[i].Descendants(w + "t").Select(node => node.Value);
-            builder.AppendLine(string.Concat(pieces));
+            builder.AppendLine(paragraphs[i].Text);
         }
 
         return DocxWhitespaceRegex().Replace(builder.ToString(), "\n").TrimEnd();
+    }
+
+    public static List<ScriptLine> ParseRtf(string rtfText)
+    {
+        if (string.IsNullOrWhiteSpace(rtfText)) return [];
+
+        try
+        {
+            using var rtb = new RichTextBox();
+            rtb.Rtf = rtfText;
+            var paragraphs = new List<FormattedParagraph>();
+
+            var lines = rtb.Lines;
+            int pos = 0;
+            foreach (var line in lines)
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    pos += line.Length + 1;
+                    continue;
+                }
+
+                int lineLen = line.Length;
+                bool isColored = false;
+
+                int end = Math.Min(pos + lineLen, rtb.TextLength);
+                for (int p = pos; p < end; p++)
+                {
+                    rtb.Select(p, 1);
+                    var color = rtb.SelectionColor;
+                    if (!color.IsEmpty && color != Color.Black && !IsDarkOrGrayColor(color))
+                    {
+                        isColored = true;
+                        break;
+                    }
+                }
+
+                paragraphs.Add(new FormattedParagraph { Text = line, IsColored = isColored });
+                pos += lineLen + 1;
+            }
+
+            if (paragraphs.Any(p => p.IsColored))
+            {
+                var filteredText = FilterColoredParagraphs(paragraphs);
+                return ParseText(filteredText);
+            }
+
+            return ParseText(rtb.Text);
+        }
+        catch
+        {
+            return ParseText(rtfText);
+        }
+    }
+
+    public static List<ScriptLine> ParseHtml(string htmlText)
+    {
+        if (string.IsNullOrWhiteSpace(htmlText)) return [];
+
+        try
+        {
+            // Extract fragment if Windows HTML clipboard comments are present
+            int startFrag = htmlText.IndexOf("<!--StartFragment-->", StringComparison.OrdinalIgnoreCase);
+            int endFrag = htmlText.IndexOf("<!--EndFragment-->", StringComparison.OrdinalIgnoreCase);
+            if (startFrag >= 0 && endFrag > startFrag)
+            {
+                htmlText = htmlText.Substring(startFrag + "<!--StartFragment-->".Length, endFrag - startFrag - "<!--StartFragment-->".Length);
+            }
+
+            // Strip Windows HTML Clipboard headers (Version:..., StartHTML:..., etc.)
+            htmlText = Regex.Replace(htmlText, @"^(?:Version|StartHTML|EndHTML|StartFragment|EndFragment|SourceURL):.*[\r\n]*", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Multiline);
+
+            // Extract CSS class color mappings before stripping <style> tags
+            var classColors = ExtractCssClassColors(htmlText);
+
+            // Strip <head>, <style>, and <script> tags to avoid parsing raw CSS rules as text lines!
+            htmlText = Regex.Replace(htmlText, @"<head\b[^>]*>[\s\S]*?</head>", string.Empty, RegexOptions.IgnoreCase);
+            htmlText = Regex.Replace(htmlText, @"<style\b[^>]*>[\s\S]*?</style>", string.Empty, RegexOptions.IgnoreCase);
+            htmlText = Regex.Replace(htmlText, @"<script\b[^>]*>[\s\S]*?</script>", string.Empty, RegexOptions.IgnoreCase);
+
+            var rawBlocks = Regex.Split(htmlText, @"<(?:p|div|br|tr|li)\b[^>]*>", RegexOptions.IgnoreCase);
+            var paragraphs = new List<FormattedParagraph>();
+
+            foreach (var rawBlock in rawBlocks)
+            {
+                if (string.IsNullOrWhiteSpace(rawBlock)) continue;
+
+                var text = WebUtility.HtmlDecode(Regex.Replace(rawBlock, @"<[^>]+>", string.Empty)).Trim();
+                if (string.IsNullOrWhiteSpace(text)) continue;
+
+                bool isColored = HasHtmlColor(rawBlock, classColors);
+                paragraphs.Add(new FormattedParagraph { Text = text, IsColored = isColored });
+            }
+
+            if (paragraphs.Count > 0)
+            {
+                if (paragraphs.Any(p => p.IsColored))
+                {
+                    var filteredText = FilterColoredParagraphs(paragraphs);
+                    return ParseText(filteredText);
+                }
+
+                var combined = string.Join("\n", paragraphs.Select(p => p.Text));
+                return ParseText(combined);
+            }
+
+            var plainText = WebUtility.HtmlDecode(Regex.Replace(htmlText, @"<[^>]+>", string.Empty));
+            return ParseText(plainText);
+        }
+        catch
+        {
+            return ParseText(htmlText);
+        }
+    }
+
+    private static Dictionary<string, bool> ExtractCssClassColors(string htmlText)
+    {
+        var classColors = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        var styleMatches = Regex.Matches(htmlText, @"<style\b[^>]*>([\s\S]*?)</style>", RegexOptions.IgnoreCase);
+        foreach (Match styleMatch in styleMatches)
+        {
+            var cssText = styleMatch.Groups[1].Value;
+            var ruleMatches = Regex.Matches(cssText, @"\.([a-zA-Z0-9_-]+)\s*\{([^}]+)\}", RegexOptions.IgnoreCase);
+            foreach (Match ruleMatch in ruleMatches)
+            {
+                var className = ruleMatch.Groups[1].Value;
+                var body = ruleMatch.Groups[2].Value;
+
+                bool isColored = false;
+
+                // Check text font color ONLY (ignore background-color marker highlights)
+                var colorMatch = Regex.Match(body, @"(?:^|;|\s)color\s*:\s*([^;}]+)", RegexOptions.IgnoreCase);
+                if (colorMatch.Success && IsCustomColorValue(colorMatch.Groups[1].Value))
+                {
+                    isColored = true;
+                }
+
+                classColors[className] = isColored;
+            }
+        }
+
+        return classColors;
+    }
+
+    private static bool HasHtmlColor(string htmlSnippet, Dictionary<string, bool>? classColors = null)
+    {
+        // 1. Check direct font color attributes in snippet (style="color:..." or color="...")
+        var colorMatch = Regex.Match(htmlSnippet, @"(?:^|;|\s|[""'])color\s*[:=]\s*[""']?\s*(#[0-9a-fA-F]{3,8}|rgb\([^)]+\)|[a-zA-Z]+)", RegexOptions.IgnoreCase);
+        if (colorMatch.Success && IsCustomColorValue(colorMatch.Groups[1].Value))
+        {
+            return true;
+        }
+
+        // 2. Check CSS class attributes (class="c1 c2 ...")
+        if (classColors != null && classColors.Count > 0)
+        {
+            var classMatches = Regex.Matches(htmlSnippet, @"class\s*=\s*[""']([^""']+)[""']", RegexOptions.IgnoreCase);
+            foreach (Match classMatch in classMatches)
+            {
+                var classNames = classMatch.Groups[1].Value.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var className in classNames)
+                {
+                    if (classColors.TryGetValue(className, out var isColored) && isColored)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsCustomColorValue(string val)
+    {
+        val = val.Trim().ToLowerInvariant();
+        if (val is "black" or "#000000" or "#000" or "auto" or "inherit" or "initial" or "#111" or "#222" or "#333" or "#000000ff") return false;
+
+        if (val.StartsWith('#'))
+        {
+            var hex = val.TrimStart('#');
+            if (hex.Length == 8) hex = hex[..6];
+            if (hex.Length == 3) hex = $"{hex[0]}{hex[0]}{hex[1]}{hex[1]}{hex[2]}{hex[2]}";
+            return !IsDarkOrGray(hex);
+        }
+
+        if (val.StartsWith("rgb", StringComparison.OrdinalIgnoreCase))
+        {
+            var numbers = Regex.Matches(val, @"\d+").Select(m => int.Parse(m.Value)).ToArray();
+            if (numbers.Length >= 3)
+            {
+                return !IsDarkOrGrayColor(Color.FromArgb(numbers[0], numbers[1], numbers[2]));
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsCustomBackgroundColorValue(string val)
+    {
+        val = val.Trim().ToLowerInvariant();
+        if (val is "white" or "#ffffff" or "#fff" or "#ffffffff" or "transparent" or "none" or "auto" or "inherit" or "initial") return false;
+
+        if (val.StartsWith('#'))
+        {
+            var hex = val.TrimStart('#');
+            if (hex.Length == 8) hex = hex[..6];
+            if (hex.Length == 3) hex = $"{hex[0]}{hex[0]}{hex[1]}{hex[1]}{hex[2]}{hex[2]}";
+            if (hex is "ffffff" or "fff" or "fefefe" or "fdfdfd" or "fafafa") return false;
+            return true;
+        }
+
+        if (val.StartsWith("rgb", StringComparison.OrdinalIgnoreCase))
+        {
+            var numbers = Regex.Matches(val, @"\d+").Select(m => int.Parse(m.Value)).ToArray();
+            if (numbers.Length >= 3)
+            {
+                if (numbers[0] > 245 && numbers[1] > 245 && numbers[2] > 245) return false;
+                return true;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsDarkOrGrayColor(Color color)
+    {
+        var r = color.R;
+        var g = color.G;
+        var b = color.B;
+
+        if (r < 80 && g < 80 && b < 80) return true;
+        if (Math.Abs(r - g) < 15 && Math.Abs(g - b) < 15 && Math.Abs(r - b) < 15) return true;
+        return false;
     }
 
     private static List<ScriptLine> ParseFormattedLines(IEnumerable<string> rawLines)
@@ -123,12 +398,25 @@ internal static partial class ScriptParser
         var result = new List<ScriptLine>();
         var sourceNumber = 0;
         var tags = GetIgnoredTags();
+        var ignoredLines = GetIgnoredLines();
 
         foreach (var rawLine in rawLines)
         {
             sourceNumber++;
             var trimmedRaw = rawLine.Trim();
             if (string.IsNullOrWhiteSpace(trimmedRaw)) continue;
+
+            if (IsIgnoredLine(trimmedRaw, ignoredLines))
+            {
+                result.Add(new ScriptLine
+                {
+                    SourceNumber = sourceNumber,
+                    RawText = trimmedRaw,
+                    CleanText = trimmedRaw,
+                    Pasteable = false
+                });
+                continue;
+            }
 
             // Find if there's a tag
             string? foundTag = null;
@@ -147,6 +435,24 @@ internal static partial class ScriptParser
             }
 
             var cleaned = CleanLeading(trimmedRaw, tags);
+
+            // Ignore lines that only got the tag and nothing else.
+            // This includes lines that are exactly the tag, or lines where the remainder
+            // contains only punctuation/whitespace and the matched tag is numeric (no letters, contains digits).
+            if (foundTag != null)
+            {
+                if (string.IsNullOrWhiteSpace(cleaned))
+                {
+                    continue;
+                }
+
+                bool isNumericTag = foundTag.Any(char.IsDigit) && !foundTag.Any(char.IsLetter);
+                if (isNumericTag && cleaned.All(c => !char.IsLetterOrDigit(c)))
+                {
+                    continue;
+                }
+            }
+
             var parts = Regex.Split(cleaned, @"(?<!:)//")
                 .Select(part => part.Trim())
                 .Where(part => part.Length > 0)
@@ -183,7 +489,6 @@ internal static partial class ScriptParser
     private static string CleanLeading(string line, string[] tags)
     {
         var trimmed = line.TrimStart();
-        if (IsPunctuationOnly(trimmed)) return trimmed;
 
         foreach (var tag in tags)
         {
@@ -200,12 +505,6 @@ internal static partial class ScriptParser
         }
 
         return trimmed;
-    }
-
-    private static bool IsPunctuationOnly(string line)
-    {
-        var stripped = line.Trim();
-        return stripped.Length > 0 && stripped.All(character => !char.IsLetterOrDigit(character));
     }
 
     private static bool HasColoredText(XElement paragraph, XNamespace w)
@@ -285,6 +584,12 @@ internal static partial class ScriptParser
     private static partial Regex DocxWhitespaceRegex();
 }
 
+internal sealed class FormattedParagraph
+{
+    public string Text { get; set; } = string.Empty;
+    public bool IsColored { get; set; }
+}
+
 internal sealed class ScriptLine
 {
     public int SourceNumber { get; init; }
@@ -292,6 +597,7 @@ internal sealed class ScriptLine
     public string CleanText { get; init; } = string.Empty;
     public bool Pasteable { get; init; }
     public bool IsPasted { get; set; }
+    public bool IsModified { get; set; }
 
     public ScriptLine() { }
 

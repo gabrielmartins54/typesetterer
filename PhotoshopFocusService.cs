@@ -120,13 +120,11 @@ internal static partial class PhotoshopFocusService
             _ = GetWindowThreadProcessId(fgWindow, out var fgProcessId);
             if (fgProcessId == processId)
             {
-                var className = new StringBuilder(256);
-                if (GetClassName(fgWindow, className, className.Capacity) > 0)
+                // If the foreground window belongs to Photoshop but is NOT the main
+                // window, it's a dialog (Layer Styles, Preferences, Save As, etc.)
+                if (fgWindow != photoshopHandle)
                 {
-                    if (className.ToString() == "#32768")
-                    {
-                        return true;
-                    }
+                    return true;
                 }
             }
         }

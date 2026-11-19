@@ -16,6 +16,7 @@ internal sealed class WindowSettings
     public ScriptSaveSlot? SaveSlot1 { get; set; }
     public ScriptSaveSlot? SaveSlot2 { get; set; }
     public string IgnoredTags { get; set; } = string.Empty;
+    public string IgnoredLines { get; set; } = string.Empty;
     public int CustomHotkey { get; set; } = 0x56; // Default to 'V'
     public bool HotkeyRequiresCtrl { get; set; } = true;
     public bool HotkeyRequiresShift { get; set; } = false;
@@ -24,6 +25,7 @@ internal sealed class WindowSettings
     public bool ScriptHotkeyRequiresCtrl { get; set; } = false;
     public bool ScriptHotkeyRequiresShift { get; set; } = false;
     public bool ScriptHotkeyRequiresAlt { get; set; } = false;
+    public string LastGoogleDocUrl { get; set; } = string.Empty;
 
     public Rectangle Bounds => new(Left, Top, Width, Height);
 
@@ -84,6 +86,15 @@ internal sealed class WindowSettings
         Save(settings);
     }
 
+    public static string GetIgnoredLines() => ScriptParser.FixBrokenUnicodeEscapes(Load()?.IgnoredLines ?? string.Empty);
+
+    public static void SaveIgnoredLines(string lines)
+    {
+        var settings = Load() ?? new WindowSettings();
+        settings.IgnoredLines = lines;
+        Save(settings);
+    }
+
     public static int GetCustomHotkey() => Load()?.CustomHotkey ?? 0x56;
     public static bool GetHotkeyRequiresCtrl() => Load()?.HotkeyRequiresCtrl ?? true;
     public static bool GetHotkeyRequiresShift() => Load()?.HotkeyRequiresShift ?? false;
@@ -111,6 +122,15 @@ internal sealed class WindowSettings
         settings.ScriptHotkeyRequiresCtrl = requiresCtrl;
         settings.ScriptHotkeyRequiresShift = requiresShift;
         settings.ScriptHotkeyRequiresAlt = requiresAlt;
+        Save(settings);
+    }
+
+    public static string GetLastGoogleDocUrl() => Load()?.LastGoogleDocUrl ?? string.Empty;
+
+    public static void SaveLastGoogleDocUrl(string url)
+    {
+        var settings = Load() ?? new WindowSettings();
+        settings.LastGoogleDocUrl = url;
         Save(settings);
     }
 
