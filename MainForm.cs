@@ -61,7 +61,7 @@ internal sealed class MainForm : Form
     {
         Text = "Typesetterer 3.0";
         StartPosition = FormStartPosition.CenterScreen;
-        TopMost = true;
+        TopMost = false; // owned by Photoshop instead: stays above PS only, not above other apps
         MinimumSize = new Size(150, 100);
         Size = new Size(390, 285);
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -296,7 +296,7 @@ internal sealed class MainForm : Form
     private static extern IntPtr GetWindowLong32(IntPtr hWnd, int nIndex);
 
     private const int GWL_HWNDPARENT = -8;
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
+    private static readonly IntPtr HWND_NOTOPMOST = new(-2);
     private const uint SWP_NOMOVE = 0x0002;
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOACTIVATE = 0x0010;
@@ -1177,7 +1177,7 @@ internal sealed class MainForm : Form
         if (current != owner)
         {
             SetWindowOwner(Handle, owner);
-            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            SetWindowPos(Handle, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
 
